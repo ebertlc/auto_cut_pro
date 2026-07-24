@@ -163,8 +163,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    // Merging speech blocks separated by gaps smaller than minGap (0.35s) to prevent hundreds of micro-cuts
-    const minGap = 0.35;
+    // Merging speech blocks separated by gaps smaller than minGap (0.6s) to ensure natural speech rhythm and reduce fragment count
+    const minGap = 0.6;
     const finalSpeech = [];
     for (const [s, e] of paddedSpeech) {
       if (finalSpeech.length === 0) {
@@ -277,102 +277,39 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // Step 4: Cortar Chunks & Concatenar em Lotes (Batch Concat) para Liberar Memória RAM do Navegador
-      updateProgressUI(65, 4, "Cortando Chunks", `Extraindo ${speechSegments.length} trechos de fala em lotes...`);
-      const BATCH_SIZE = 15;
-      const batchFiles = [];
-      const totalSegments = speechSegments.length;
+      // Step 4: Cortar & Concatenar em Passagem Única (Single-Pass Filter Script)
+      // Executa o corte total em 1 único comando do FFmpeg, sem loops repetidos ou estouro de memória!
+      updateProgressUI(65, 4, "Cortando & Mesclando Vídeo", `Processando ${speechSegments.length} trecho(s) de fala em passagem única...`);
+
+      let filterScript = "";
+      let concatInputs = "";
+
+      for (let k = 0; k < speechSegments.length; k++) {
+        const [st, et] = speechSegments[k];
+        filterScript += `[0:v]trim=start=${st.toFixed(3)}:end=${et.toFixed(3)},setpts=PTS-STARTPTS[v${k}];\n`;
+        filterScript += `[0:a]atrim=start=${st.toFixed(3)}:end=${et.toFixed(3)},asetpts=PTS-STARTPTS[a${k}];\n`;
+        concatInputs += `[v${k}][a${k}]`;
+      }
+
+      filterScript += `${concatInputs}concat=n=${speechSegments.length}:v=1:a=1[outv][outa]`;
+
       const encoder = new TextEncoder();
+      ffmpegInstance.FS("writeFile", "filter.txt", encoder.encode(filterScript));
 
-      for (let i = 0; i < totalSegments; i += BATCH_SIZE) {
-        const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
-        const currentBatchSegments = speechSegments.slice(i, i + BATCH_SIZE);
-        const currentChunks = [];
-        let batchListTxt = "";
-
-        for (let j = 0; j < currentBatchSegments.length; j++) {
-          const globalIdx = i + j;
-          const [st, et] = currentBatchSegments[j];
-          const dur = Math.max(0, et - st);
-          if (dur <= 0) continue;
-
-          const chunkName = `chunk_${globalIdx + 1}.mp4`;
-          currentChunks.push(chunkName);
-
-          const chunkProgress = 65 + Math.floor(((globalIdx + 1) / totalSegments) * 22);
-          updateProgressUI(
-            chunkProgress,
-            4,
-            "Cortando Chunks",
-            `Extraindo trecho ${globalIdx + 1} de ${totalSegments}...`
-          );
-
-          await ffmpegInstance.run(
-            "-y",
-            "-ss", st.toFixed(3),
-            "-i", "input.mp4",
-            "-t", dur.toFixed(3),
-            "-c", "copy",
-            chunkName
-          );
-
-          // Pausa para dar tempo ao event loop do navegador e garbage collector
-          await new Promise((resolve) => setTimeout(resolve, 15));
-
-          batchListTxt += `file '${chunkName}'\n`;
-        }
-
-        if (currentChunks.length > 0) {
-          const batchFileName = `batch_${batchIndex}.mp4`;
-          batchFiles.push(batchFileName);
-
-          const listFileName = `list_batch_${batchIndex}.txt`;
-          ffmpegInstance.FS("writeFile", listFileName, encoder.encode(batchListTxt));
-
-          // Concatenar este lote de trechos em um único arquivo de lote
-          await ffmpegInstance.run(
-            "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", listFileName,
-            "-c", "copy",
-            batchFileName
-          );
-
-          // LIMPAR IMEDIATAMENTE os trechos individuais da memória RAM do navegador!
-          ffmpegInstance.FS("unlink", listFileName);
-          for (const chunk of currentChunks) {
-            try {
-              ffmpegInstance.FS("unlink", chunk);
-            } catch (err) {}
-          }
-        }
-      }
-
-      // Concatenar os arquivos de lote gerados em um vídeo final
-      updateProgressUI(88, 4, "Mesclando Vídeo Final", "Concatenando lotes em vídeo final...");
-      let finalBatchListTxt = "";
-      for (const bFile of batchFiles) {
-        finalBatchListTxt += `file '${bFile}'\n`;
-      }
-      ffmpegInstance.FS("writeFile", "list_final.txt", encoder.encode(finalBatchListTxt));
+      updateProgressUI(80, 4, "Renderizando Vídeo Final", "Processando edição em passagem única...");
 
       await ffmpegInstance.run(
         "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", "list_final.txt",
-        "-c", "copy",
+        "-i", "input.mp4",
+        "-filter_complex_script", "filter.txt",
+        "-map", "[outv]",
+        "-map", "[outa]",
         "output.mp4"
       );
 
-      // Limpar os arquivos de lote da memória RAM
-      ffmpegInstance.FS("unlink", "list_final.txt");
-      for (const bFile of batchFiles) {
-        try {
-          ffmpegInstance.FS("unlink", bFile);
-        } catch (err) {}
-      }
+      try {
+        ffmpegInstance.FS("unlink", "filter.txt");
+      } catch (err) {}
 
       // Step 5: Obter Arquivo Final em Memória
       updateProgressUI(100, 4, "Finalizando", "Gerando arquivo para download...");

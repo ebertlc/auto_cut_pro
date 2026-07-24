@@ -143,7 +143,7 @@ def get_speech_segments(
             padded_speech.append((pst, pet))
 
     final_speech = []
-    min_gap = 0.35  # Pausas de silêncio menores que 0.35s após padding são unificadas para evitar centenas de micro-cortes
+    min_gap = 0.6  # Pausas de silêncio menores que 0.6s após padding são unificadas para ritmo natural e evitar cortes picotados
     for st, et in padded_speech:
         if not final_speech:
             final_speech.append((st, et))
