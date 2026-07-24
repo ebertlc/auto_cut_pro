@@ -1,0 +1,11 @@
+server.py
+requirements.txt
+Requirements.txt
+api/
+autocut.py
+extract_audio.py
+test_speech_segments.py
+temp_uploads/
+outputs/
+nixpacks.toml
+render.yaml

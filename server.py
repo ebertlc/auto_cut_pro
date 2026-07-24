@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="AutoCut Pro API", version="1.0.0")
 
-# Permitir CORS para requisições locais
+# Permitir CORS para requisições locais e hospedadas
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -182,7 +182,6 @@ def process_video_task(
         tasks_db[task_id]["silences"] = silences
         tasks_db[task_id]["speech_segments"] = speech_segments
 
-        # Se nenhum segmento de fala foi retornado (por ex: arquivo totalmente em silêncio ou fala contínua sem silêncios)
         if not speech_segments:
             if total_duration > 0:
                 speech_segments = [(0.0, total_duration)]
@@ -192,8 +191,7 @@ def process_video_task(
 
         total_chunks = len(speech_segments)
 
-        # Etapa 3 & 4: Processamento de Passagem Única com precisão de frame (Frame-Accurate Single Pass)
-        # Garante 100% de remoção dos silêncios sem duplicar quadros nem aumentar tamanho/duração do vídeo!
+        # Etapa 3 & 4: Processamento de Passagem Única com precisão de frame
         tasks_db[task_id]["step"] = 3
         tasks_db[task_id]["step_name"] = "Cortando & Mesclando Vídeo"
         tasks_db[task_id]["progress"] = 70
@@ -346,5 +344,6 @@ def stream_output(filename: str):
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 if __name__ == "__main__":
-    print("Iniciando servidor web AutoCut Pro em http://localhost:8000 ...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    print(f"Iniciando servidor web AutoCut Pro em http://0.0.0.0:{port} ...")
+    uvicorn.run(app, host="0.0.0.0", port=port)

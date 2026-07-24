@@ -1,17 +1,5 @@
 {
   "version": 2,
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 60,
-      "memory": 1024
-    }
-  },
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "api/index.py"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",

@@ -1,4 +1,19 @@
 document.addEventListener("DOMContentLoaded", () => {
+  // ==========================================================================
+  // CONFIGURAÇÃO DO BACKEND
+  // Se o frontend (este site) estiver hospedado separadamente do backend
+  // (ex: frontend no Vercel + backend no Railway/Render/Fly.io), defina aqui
+  // a URL pública do backend. Deixe como string vazia ("") se o frontend e o
+  // backend estiverem no MESMO domínio (ex: rodando localmente via server.py).
+  // Exemplo: const API_BASE_URL = "https://auto-cut-pro-backend.up.railway.app";
+  // ==========================================================================
+  const API_BASE_URL = "https://SEU-BACKEND-AQUI.up.railway.app"; // <-- TROQUE PELA URL DO SEU BACKEND
+
+  function apiUrl(path) {
+    // Evita barra dupla caso API_BASE_URL termine com "/"
+    return `${API_BASE_URL.replace(/\/$/, "")}${path}`;
+  }
+
   // DOM Elements
   const statusBadge = document.getElementById("ffmpegStatus");
   const statusText = document.getElementById("statusText");
@@ -225,7 +240,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // 1. Verificação de Servidor Nativo Local (FastAPI python server.py)
     let isNativeServerOnline = false;
     try {
-      const statusRes = await fetch("/api/status", { method: "GET", cache: "no-store" });
+      const statusRes = await fetch(apiUrl("/api/status"), { method: "GET", cache: "no-store" });
       if (statusRes.ok) {
         const statusData = await statusRes.json();
         if (statusData.ffmpeg_installed) {
@@ -238,7 +253,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (isNativeServerOnline) {
       // MODO SERVIDOR NATIVO LOCAL: 30x mais rápido (aproveita todos os núcleos do CPU/GPU do sistema)
-      logToConsole("🚀 Servidor Nativo Local Detectado! Utilizando aceleração máxima de hardware (30x mais rápido)...", "success");
+      logToConsole("🚀 Servidor Nativo Detectado! Utilizando aceleração máxima de hardware (30x mais rápido)...", "success");
       updateProgressUI(10, 1, "Enviando para Servidor Nativo", "Transmitindo arquivo para o engine nativo...");
 
       const formData = new FormData();
@@ -248,7 +263,7 @@ document.addEventListener("DOMContentLoaded", () => {
       formData.append("min_silence_ms", minSilenceMs.value);
 
       try {
-        const uploadRes = await fetch("/api/process", {
+        const uploadRes = await fetch(apiUrl("/api/process"), {
           method: "POST",
           body: formData,
         });
@@ -266,11 +281,9 @@ document.addEventListener("DOMContentLoaded", () => {
       logToConsole("ℹ Servidor nativo não detectado. Este site (versão hospedada) processa 100% no seu navegador via WebAssembly.", "info");
       logToConsole("💡 Para processar 10-30x mais rápido e sem sobrecarregar seu PC: baixe o projeto e rode 'python server.py' localmente.", "warning");
 
-      // Aviso preventivo para vídeos grandes: processamento no navegador é single-thread (sem
-      // aceleração de hardware), então vídeos longos/pesados podem demorar bastante e manter
-      // o uso de CPU alto por um período prolongado. Dar ao usuário a chance de cancelar.
+      // Aviso preventivo para vídeos grandes
       const sizeMB = selectedFile.size / (1024 * 1024);
-      const LARGE_FILE_MB = 100; // acima disso, avisar antes de prosseguir
+      const LARGE_FILE_MB = 100;
       if (sizeMB > LARGE_FILE_MB) {
         const proceed = confirm(
           `Este vídeo tem ${sizeMB.toFixed(0)}MB e será processado 100% no navegador (sem servidor nativo detectado).\n\n` +
@@ -333,7 +346,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!message) return;
         ffmpegLogs.push(message);
 
-        // Capturar duração total quando informada pelo FFmpeg
         const durMatch = message.match(/Duration:\s*(\d+):(\d+):([\d\.]+)/);
         if (durMatch) {
           const h = parseFloat(durMatch[1]);
@@ -342,7 +354,6 @@ document.addEventListener("DOMContentLoaded", () => {
           currentTotalDuration = h * 3600 + m * 60 + s;
         }
 
-        // Real-time FFmpeg rendering progress parser: frame= 450 fps=95 time=00:00:18.75 speed=3.9x
         const timeMatch = message.match(/time=\s*(\d+):(\d+):([\d\.]+)/);
         if (timeMatch) {
           const h = parseFloat(timeMatch[1]);
@@ -389,10 +400,8 @@ document.addEventListener("DOMContentLoaded", () => {
         "-"
       );
 
-      // Parse FFmpeg logs
       const fullLog = ffmpegLogs.join("\n");
       
-      // Parse total duration
       let totalDuration = 0;
       const durationMatch = fullLog.match(/Duration:\s*(\d+):(\d+):([\d\.]+)/);
       if (durationMatch) {
@@ -402,7 +411,6 @@ document.addEventListener("DOMContentLoaded", () => {
         totalDuration = h * 3600 + m * 60 + s;
       }
 
-      // Parse silence intervals
       const silenceStarts = [...fullLog.matchAll(/silence_start:\s*([\d\.]+)/g)].map(m => parseFloat(m[1]));
       const silenceEnds = [...fullLog.matchAll(/silence_end:\s*([\d\.]+)/g)].map(m => parseFloat(m[1]));
 
@@ -426,7 +434,6 @@ document.addEventListener("DOMContentLoaded", () => {
       logToConsole(`✔ Análise concluída: ${silences.length} silêncio(s) detectado(s).`, "success");
       logToConsole(`✔ ${speechSegments.length} trecho(s) de fala a serem mantidos. Duração estimada: ${formatDuration(estDuration)}.`, "success");
 
-      // Atualizar Barra de Estatísticas em Tempo Real
       if (liveStatsBar) {
         liveStatsBar.classList.remove("hidden");
         liveSilencesCount.textContent = silences.length;
@@ -441,14 +448,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // Step 4: Cortar & Concatenar em Passagem Única (Frame-Accurate)
-      // IMPORTANTE: usar "-c copy" com "-ss"/"-t" para cada trecho parece mais rápido, mas
-      // o stream copy só pode cortar em keyframes. Como o ponto pedido raramente cai exatamente
-      // num keyframe, o FFmpeg recua até o keyframe anterior em CADA corte — e com dezenas/centenas
-      // de cortes, esses "vazamentos" se acumulam e o vídeo final pode terminar MAIOR que o esperado
-      // (ou até maior que o original). Por isso usamos aqui sempre o filtro trim/concat em uma única
-      // passagem: reprocessa (recodifica) o vídeo, mas corta exatamente nos pontos calculados,
-      // sem acúmulo de erro, e faz apenas 1 chamada ao FFmpeg em vez de centenas.
       updateProgressUI(65, 4, "Cortando & Recodificando Vídeo Final", `Preparando corte preciso de ${speechSegments.length} trecho(s) de fala...`);
       logToConsole(`✂ Gerando corte preciso (passagem única) para ${speechSegments.length} trecho(s)...`, "info");
       logToConsole("ℹ Este passo recodifica o vídeo para garantir precisão — pode levar alguns minutos dependendo do tamanho do arquivo e do seu computador.", "info");
@@ -467,8 +466,6 @@ document.addEventListener("DOMContentLoaded", () => {
       filterScript += `${concatInputs}concat=n=${speechSegments.length}:v=1:a=1[outv][outa]`;
       ffmpegInstance.FS("writeFile", "filter.txt", encoder.encode(filterScript));
 
-      // Preset "ultrafast" + CRF moderado: prioriza velocidade de codificação (o gargalo real no
-      // navegador, que roda em single-thread via WASM) mantendo qualidade e tamanho de arquivo razoáveis.
       await ffmpegInstance.run(
         "-y",
         "-i", "input.mp4",
@@ -489,7 +486,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
       logToConsole("✔ Vídeo cortado com precisão de frame, sem acúmulo de duração extra.", "success");
 
-      // Step 5: Obter Arquivo Final em Memória
       updateProgressUI(100, 4, "Finalizando", "Gerando arquivo para download...");
       const outputData = ffmpegInstance.FS("readFile", "output.mp4");
 
@@ -499,7 +495,6 @@ document.addEventListener("DOMContentLoaded", () => {
       const blob = new Blob([outputData.buffer], { type: "video/mp4" });
       const videoUrl = URL.createObjectURL(blob);
 
-      // Limpar arquivos restantes no sistema virtual de arquivos
       try {
         ffmpegInstance.FS("unlink", "input.mp4");
         ffmpegInstance.FS("unlink", "temp_audio.wav");
@@ -673,12 +668,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   let progressInterval = null;
+  let lastLoggedMsg = "";
 
   function startNativeProgressPolling(taskId) {
     if (progressInterval) clearInterval(progressInterval);
 
     progressInterval = setInterval(() => {
-      fetch(`/api/progress/${taskId}`)
+      fetch(apiUrl(`/api/progress/${taskId}`))
         .then((res) => res.json())
         .then((task) => {
           updateProgressUI(
@@ -712,8 +708,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 savedDuration: task.result.saved_duration,
                 silences: task.result.silences || [],
                 speechSegments: task.result.speech_segments || [],
-                videoUrl: task.result.stream_url,
-                downloadUrl: task.result.download_url,
+                videoUrl: apiUrl(task.result.stream_url),
+                downloadUrl: apiUrl(task.result.download_url),
                 filename: task.result.output_filename,
               });
             }, 500);
