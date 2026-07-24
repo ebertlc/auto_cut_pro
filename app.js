@@ -263,8 +263,27 @@ document.addEventListener("DOMContentLoaded", () => {
         logToConsole(`⚠ Falha no servidor nativo (${err.message}). Recorrendo ao modo WebAssembly do navegador...`, "warning");
       }
     } else {
-      logToConsole("ℹ Servidor local não detectado. Executando via WebAssembly (Client-Side no navegador)...", "info");
-      logToConsole("💡 Dica de velocidade: Execute 'python server.py' no terminal para cortar vídeos longos em 3 segundos!", "warning");
+      logToConsole("ℹ Servidor nativo não detectado. Este site (versão hospedada) processa 100% no seu navegador via WebAssembly.", "info");
+      logToConsole("💡 Para processar 10-30x mais rápido e sem sobrecarregar seu PC: baixe o projeto e rode 'python server.py' localmente.", "warning");
+
+      // Aviso preventivo para vídeos grandes: processamento no navegador é single-thread (sem
+      // aceleração de hardware), então vídeos longos/pesados podem demorar bastante e manter
+      // o uso de CPU alto por um período prolongado. Dar ao usuário a chance de cancelar.
+      const sizeMB = selectedFile.size / (1024 * 1024);
+      const LARGE_FILE_MB = 100; // acima disso, avisar antes de prosseguir
+      if (sizeMB > LARGE_FILE_MB) {
+        const proceed = confirm(
+          `Este vídeo tem ${sizeMB.toFixed(0)}MB e será processado 100% no navegador (sem servidor nativo detectado).\n\n` +
+          `Isso pode levar bastante tempo e manter o uso de CPU do seu computador alto durante o processamento.\n\n` +
+          `Recomendado: rode 'python server.py' localmente para processar em segundos, com uso de recursos muito menor.\n\n` +
+          `Deseja continuar mesmo assim no navegador?`
+        );
+        if (!proceed) {
+          logToConsole("✖ Processamento cancelado pelo usuário.", "warning");
+          resetToEmptyState();
+          return;
+        }
+      }
     }
 
     // 2. MODO BROWSER WEBASSEMBLY (Client-Side Fallback)
@@ -422,140 +441,53 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // Step 4: Cortar & Concatenar Inteligente (Smart Fast Cut com Correção de Timestamps)
-      // Utiliza busca rápida com correção de PTS/DTS (-avoid_negative_ts make_zero) para garantir corte real + velocidade máxima!
-      updateProgressUI(65, 4, "Cortando Vídeo (Modo Rápido & Preciso)", `Processando ${speechSegments.length} trecho(s) de fala com alinhamento de timestamps...`);
-      logToConsole(`⚡ Modo Rápido & Preciso Ativado: processando ${speechSegments.length} trechos com correção de PTS/DTS...`, "info");
+      // Step 4: Cortar & Concatenar em Passagem Única (Frame-Accurate)
+      // IMPORTANTE: usar "-c copy" com "-ss"/"-t" para cada trecho parece mais rápido, mas
+      // o stream copy só pode cortar em keyframes. Como o ponto pedido raramente cai exatamente
+      // num keyframe, o FFmpeg recua até o keyframe anterior em CADA corte — e com dezenas/centenas
+      // de cortes, esses "vazamentos" se acumulam e o vídeo final pode terminar MAIOR que o esperado
+      // (ou até maior que o original). Por isso usamos aqui sempre o filtro trim/concat em uma única
+      // passagem: reprocessa (recodifica) o vídeo, mas corta exatamente nos pontos calculados,
+      // sem acúmulo de erro, e faz apenas 1 chamada ao FFmpeg em vez de centenas.
+      updateProgressUI(65, 4, "Cortando & Recodificando Vídeo Final", `Preparando corte preciso de ${speechSegments.length} trecho(s) de fala...`);
+      logToConsole(`✂ Gerando corte preciso (passagem única) para ${speechSegments.length} trecho(s)...`, "info");
+      logToConsole("ℹ Este passo recodifica o vídeo para garantir precisão — pode levar alguns minutos dependendo do tamanho do arquivo e do seu computador.", "info");
 
-      const BATCH_SIZE = 20;
-      const batchFiles = [];
-      const totalSegments = speechSegments.length;
       const encoder = new TextEncoder();
+      let filterScript = "";
+      let concatInputs = "";
+
+      for (let k = 0; k < speechSegments.length; k++) {
+        const [st, et] = speechSegments[k];
+        filterScript += `[0:v]trim=start=${st.toFixed(3)}:end=${et.toFixed(3)},setpts=PTS-STARTPTS[v${k}];\n`;
+        filterScript += `[0:a]atrim=start=${st.toFixed(3)}:end=${et.toFixed(3)},asetpts=PTS-STARTPTS[a${k}];\n`;
+        concatInputs += `[v${k}][a${k}]`;
+      }
+
+      filterScript += `${concatInputs}concat=n=${speechSegments.length}:v=1:a=1[outv][outa]`;
+      ffmpegInstance.FS("writeFile", "filter.txt", encoder.encode(filterScript));
+
+      // Preset "ultrafast" + CRF moderado: prioriza velocidade de codificação (o gargalo real no
+      // navegador, que roda em single-thread via WASM) mantendo qualidade e tamanho de arquivo razoáveis.
+      await ffmpegInstance.run(
+        "-y",
+        "-i", "input.mp4",
+        "-filter_complex_script", "filter.txt",
+        "-map", "[outv]",
+        "-map", "[outa]",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "26",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "output.mp4"
+      );
 
       try {
-        for (let i = 0; i < totalSegments; i += BATCH_SIZE) {
-          const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
-          const currentBatchSegments = speechSegments.slice(i, i + BATCH_SIZE);
-          const currentChunks = [];
-          let batchListTxt = "";
+        ffmpegInstance.FS("unlink", "filter.txt");
+      } catch (err) {}
 
-          for (let j = 0; j < currentBatchSegments.length; j++) {
-            const globalIdx = i + j;
-            const [st, et] = currentBatchSegments[j];
-            const dur = Math.max(0, et - st);
-            if (dur <= 0) continue;
-
-            const chunkName = `chunk_${globalIdx + 1}.mp4`;
-            currentChunks.push(chunkName);
-
-            const chunkProgress = 65 + Math.floor(((globalIdx + 1) / totalSegments) * 22);
-            updateProgressUI(
-              chunkProgress,
-              4,
-              "Cortando Vídeo (Modo Rápido & Preciso)",
-              `Corte ${globalIdx + 1} de ${totalSegments} (${st.toFixed(1)}s → ${et.toFixed(1)}s)...`
-            );
-
-            // FFmpeg Stream Copy com correção de timestamps para garantir que o vídeo venha cortado de verdade
-            await ffmpegInstance.run(
-              "-y",
-              "-fflags", "+genpts",
-              "-ss", st.toFixed(3),
-              "-i", "input.mp4",
-              "-t", dur.toFixed(3),
-              "-avoid_negative_ts", "make_zero",
-              "-c", "copy",
-              chunkName
-            );
-
-            await new Promise((resolve) => setTimeout(resolve, 8));
-            batchListTxt += `file '${chunkName}'\n`;
-          }
-
-          if (currentChunks.length > 0) {
-            const batchFileName = `batch_${batchIndex}.mp4`;
-            batchFiles.push(batchFileName);
-
-            const listFileName = `list_batch_${batchIndex}.txt`;
-            ffmpegInstance.FS("writeFile", listFileName, encoder.encode(batchListTxt));
-
-            await ffmpegInstance.run(
-              "-y",
-              "-f", "concat",
-              "-safe", "0",
-              "-i", listFileName,
-              "-c", "copy",
-              batchFileName
-            );
-
-            ffmpegInstance.FS("unlink", listFileName);
-            for (const chunk of currentChunks) {
-              try {
-                ffmpegInstance.FS("unlink", chunk);
-              } catch (err) {}
-            }
-          }
-        }
-
-        // Unir lotes finais via Concat Demuxer
-        updateProgressUI(90, 4, "Mesclando Vídeo Final", "Unindo lotes de trechos cortados...");
-        let finalBatchListTxt = "";
-        for (const bFile of batchFiles) {
-          finalBatchListTxt += `file '${bFile}'\n`;
-        }
-        ffmpegInstance.FS("writeFile", "list_final.txt", encoder.encode(finalBatchListTxt));
-
-        await ffmpegInstance.run(
-          "-y",
-          "-f", "concat",
-          "-safe", "0",
-          "-i", "list_final.txt",
-          "-c", "copy",
-          "output.mp4"
-        );
-
-        ffmpegInstance.FS("unlink", "list_final.txt");
-        for (const bFile of batchFiles) {
-          try {
-            ffmpegInstance.FS("unlink", bFile);
-          } catch (err) {}
-        }
-
-        logToConsole("⚡ Vídeo cortado com sucesso em modo rápido e preciso!", "success");
-
-      } catch (fastErr) {
-        logToConsole("⚠ Recorrendo ao renderizador ultrafast de passagem única...", "warning");
-
-        let filterScript = "";
-        let concatInputs = "";
-
-        for (let k = 0; k < speechSegments.length; k++) {
-          const [st, et] = speechSegments[k];
-          filterScript += `[0:v]trim=start=${st.toFixed(3)}:end=${et.toFixed(3)},setpts=PTS-STARTPTS[v${k}];\n`;
-          filterScript += `[0:a]atrim=start=${st.toFixed(3)}:end=${et.toFixed(3)},asetpts=PTS-STARTPTS[a${k}];\n`;
-          concatInputs += `[v${k}][a${k}]`;
-        }
-
-        filterScript += `${concatInputs}concat=n=${speechSegments.length}:v=1:a=1[outv][outa]`;
-        ffmpegInstance.FS("writeFile", "filter.txt", encoder.encode(filterScript));
-
-        await ffmpegInstance.run(
-          "-y",
-          "-i", "input.mp4",
-          "-filter_complex_script", "filter.txt",
-          "-map", "[outv]",
-          "-map", "[outa]",
-          "-c:v", "libx264",
-          "-preset", "ultrafast",
-          "-tune", "zerolatency",
-          "-crf", "28",
-          "output.mp4"
-        );
-
-        try {
-          ffmpegInstance.FS("unlink", "filter.txt");
-        } catch (err) {}
-      }
+      logToConsole("✔ Vídeo cortado com precisão de frame, sem acúmulo de duração extra.", "success");
 
       // Step 5: Obter Arquivo Final em Memória
       updateProgressUI(100, 4, "Finalizando", "Gerando arquivo para download...");
