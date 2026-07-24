@@ -7,7 +7,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // backend estiverem no MESMO domínio (ex: rodando localmente via server.py).
   // Exemplo: const API_BASE_URL = "https://auto-cut-pro-backend.up.railway.app";
   // ==========================================================================
-  const API_BASE_URL = "https://SEU-BACKEND-AQUI.up.railway.app"; // <-- TROQUE PELA URL DO SEU BACKEND
+  const API_BASE_URL = "https://autocutpro-production.up.railway.app";
 
   function apiUrl(path) {
     // Evita barra dupla caso API_BASE_URL termine com "/"
