@@ -170,9 +170,48 @@
             </video>
           </div>
 
+          <!-- Interactive Video Cuts Timeline -->
+          <div class="timeline-card" id="timelineCard">
+            <div class="timeline-card-header">
+              <div class="timeline-title-wrapper">
+                <span class="timeline-icon">🎞️</span>
+                <h3 class="timeline-title">Timeline de Cortes e Trechos</h3>
+              </div>
+              <div class="timeline-legend">
+                <span class="legend-item"><span class="legend-dot speech"></span> Fala Mantida</span>
+                <span class="legend-item"><span class="legend-dot silence"></span> Silêncio Removido</span>
+              </div>
+            </div>
+
+            <!-- Visual Bar Track -->
+            <div class="timeline-track-wrapper">
+              <div class="timeline-ruler" id="timelineRuler">
+                <span>00:00</span>
+                <span id="rulerMid">00:00</span>
+                <span id="rulerEnd">00:00</span>
+              </div>
+              <div class="timeline-track" id="timelineTrack">
+                <!-- Segments rendered dynamically via JavaScript -->
+              </div>
+            </div>
+
+            <!-- Detailed Cuts List Accordion -->
+            <div class="cuts-details-wrapper">
+              <div class="cuts-summary-bar">
+                <span id="cutsCountText">0 silêncios cortados</span>
+                <button type="button" class="btn-toggle-details" id="btnToggleDetails">
+                  <span id="toggleDetailsText">Mostrar lista de cortes</span> ▾
+                </button>
+              </div>
+              <div class="cuts-list hidden" id="cutsList">
+                <!-- List items rendered dynamically -->
+              </div>
+            </div>
+          </div>
+
           <!-- Download Action -->
           <div class="actions-row">
-            <a id="btnDownload" href="#" download="autocut_output.mp4" class="btn-download">
+            <a id="btnDownload" href="#" download class="btn-download">
               <span>📥 Baixar Vídeo Editado (.mp4)</span>
             </a>
           </div>

@@ -186,16 +186,37 @@ def process_video_task(
         speech_segments = get_speech_segments(silences, total_duration, padding)
         final_duration = sum(end - start for start, end in speech_segments)
 
-        # Etapa 3
+        # Salvar silêncios e segmentos de fala no banco em memória para a Timeline em tempo real
+        tasks_db[task_id]["total_duration"] = total_duration
+        tasks_db[task_id]["silences"] = silences
+        tasks_db[task_id]["speech_segments"] = speech_segments
+
+        # Se nenhum segmento de fala foi retornado (por ex: arquivo totalmente em silêncio ou fala contínua sem silêncios)
+        if not speech_segments:
+            if total_duration > 0:
+                speech_segments = [(0.0, total_duration)]
+                final_duration = total_duration
+            else:
+                raise ValueError("Não foi possível determinar a duração do áudio ou processar os segmentos.")
+
+        total_chunks = len(speech_segments)
+
+        # Etapa 3: Cortando Chunks com progresso incremental dinâmico
         tasks_db[task_id]["step"] = 3
         tasks_db[task_id]["step_name"] = "Cortando Chunks"
         tasks_db[task_id]["progress"] = 65
-        tasks_db[task_id]["message"] = f"Extraindo {len(speech_segments)} trechos de fala sem re-codificação..."
+        tasks_db[task_id]["message"] = f"Extraindo {total_chunks} trecho(s) de fala sem re-codificação..."
 
         for i, (st, et) in enumerate(speech_segments, start=1):
             dur = max(0.0, et - st)
             if dur <= 0:
                 continue
+
+            # Atualização dinâmica de progresso entre 65% e 88%
+            chunk_progress = 65 + int((i / total_chunks) * 23)
+            tasks_db[task_id]["progress"] = min(88, chunk_progress)
+            tasks_db[task_id]["message"] = f"Extraindo trecho {i} de {total_chunks} ({st:.1f}s → {et:.1f}s)..."
+
             chunk_path = UPLOAD_DIR / f"{task_id}_chunk_{i}.mp4"
             temp_chunks.append(chunk_path)
 
@@ -203,7 +224,17 @@ def process_video_task(
                 "ffmpeg", "-y", "-ss", str(st), "-i", str(input_file_path),
                 "-t", str(dur), "-c", "copy", str(chunk_path)
             ]
-            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if res.returncode != 0:
+                # Tentar corte alternativo se -c copy falhar devido a alinhamento de chave
+                cmd_reencode = [
+                    "ffmpeg", "-y", "-ss", str(st), "-i", str(input_file_path),
+                    "-t", str(dur), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(chunk_path)
+                ]
+                subprocess.run(cmd_reencode, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+
+        if not temp_chunks:
+            raise ValueError("Nenhum trecho de vídeo válido pôde ser gerado.")
 
         # Criar list.txt
         with open(list_file, "w", encoding="utf-8") as f:
@@ -220,7 +251,14 @@ def process_video_task(
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
             "-i", str(list_file), "-c", "copy", str(output_file_path)
         ]
-        subprocess.run(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        res_concat = subprocess.run(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res_concat.returncode != 0:
+            # Fallback se re-encoding for necessário no concat
+            concat_reencode = [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", str(list_file), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(output_file_path)
+            ]
+            subprocess.run(concat_reencode, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
 
         saved_duration = max(0.0, total_duration - final_duration)
 
@@ -234,6 +272,8 @@ def process_video_task(
             "final_duration": final_duration,
             "saved_duration": saved_duration,
             "segments_count": len(speech_segments),
+            "silences": silences,
+            "speech_segments": speech_segments,
             "output_filename": output_file_path.name,
             "download_url": f"/api/download/{output_file_path.name}",
             "stream_url": f"/api/stream/{output_file_path.name}",

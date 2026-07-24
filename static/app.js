@@ -153,6 +153,29 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   });
 
+  const timelineTrack = document.getElementById("timelineTrack");
+  const timelineRuler = document.getElementById("timelineRuler");
+  const rulerMid = document.getElementById("rulerMid");
+  const rulerEnd = document.getElementById("rulerEnd");
+  const cutsCountText = document.getElementById("cutsCountText");
+  const btnToggleDetails = document.getElementById("btnToggleDetails");
+  const toggleDetailsText = document.getElementById("toggleDetailsText");
+  const cutsList = document.getElementById("cutsList");
+
+  // Toggle Cuts List Accordion
+  if (btnToggleDetails) {
+    btnToggleDetails.addEventListener("click", () => {
+      const isHidden = cutsList.classList.contains("hidden");
+      if (isHidden) {
+        cutsList.classList.remove("hidden");
+        toggleDetailsText.textContent = "Ocultar lista de cortes";
+      } else {
+        cutsList.classList.add("hidden");
+        toggleDetailsText.textContent = "Mostrar lista de cortes";
+      }
+    });
+  }
+
   // 5. Progress Polling
   function startProgressPolling(taskId) {
     if (progressInterval) clearInterval(progressInterval);
@@ -207,7 +230,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // 6. Present Final Results
+  // 6. Present Final Results & Timeline
   function showResults(result) {
     progressContainer.classList.add("hidden");
     resultsContainer.classList.remove("hidden");
@@ -222,6 +245,85 @@ document.addEventListener("DOMContentLoaded", () => {
 
     btnDownload.href = result.download_url;
     btnDownload.download = result.output_filename;
+
+    // Render Timeline of Cuts
+    renderTimeline(result.original_duration, result.silences || [], result.speech_segments || []);
+  }
+
+  function renderTimeline(totalDuration, silences, speechSegments) {
+    if (!timelineTrack) return;
+    timelineTrack.innerHTML = "";
+    cutsList.innerHTML = "";
+
+    if (!totalDuration || totalDuration <= 0) return;
+
+    // 1. Setup Ruler Timestamps
+    rulerMid.textContent = formatDuration(totalDuration / 2);
+    rulerEnd.textContent = formatDuration(totalDuration);
+
+    // 2. Build Timeline Segments (Combined Speech + Silences)
+    const allSegments = [];
+    (speechSegments || []).forEach(([start, end]) => {
+      allSegments.push({ type: "speech", start, end });
+    });
+    (silences || []).forEach(([start, end]) => {
+      allSegments.push({ type: "silence", start, end });
+    });
+    allSegments.sort((a, b) => a.start - b.start);
+
+    allSegments.forEach((seg) => {
+      const widthPct = Math.max(0.2, ((seg.end - seg.start) / totalDuration) * 100);
+      const segEl = document.createElement("div");
+      segEl.className = `timeline-segment ${seg.type}`;
+      segEl.style.width = `${widthPct}%`;
+
+      const typeLabel = seg.type === "speech" ? "Fala" : "Silêncio Cortado";
+      const durSec = (seg.end - seg.start).toFixed(1);
+      const timeStr = `${formatDuration(seg.start)} - ${formatDuration(seg.end)}`;
+      segEl.setAttribute("data-tooltip", `${typeLabel}: ${timeStr} (${durSec}s)`);
+
+      segEl.addEventListener("click", () => {
+        if (outputVideoPlayer) {
+          outputVideoPlayer.currentTime = seg.start;
+          outputVideoPlayer.play();
+        }
+      });
+
+      timelineTrack.appendChild(segEl);
+    });
+
+    // 3. Build Detailed Cuts List Accordion
+    const count = silences.length;
+    cutsCountText.textContent = `${count} ${count === 1 ? "silêncio cortado" : "silêncios cortados"}`;
+
+    if (count === 0) {
+      cutsList.innerHTML = `<div class="cut-item" style="color: var(--text-muted);">Nenhum intervalo de silêncio significativo foi detectado.</div>`;
+      return;
+    }
+
+    silences.forEach(([st, et], idx) => {
+      const dur = (et - st).toFixed(1);
+      const cutItem = document.createElement("div");
+      cutItem.className = "cut-item";
+
+      cutItem.innerHTML = `
+        <div class="cut-time-range">
+          <span>Corte #${idx + 1}: ${formatDuration(st)} → ${formatDuration(et)}</span>
+          <span class="cut-badge-dur">-${dur}s</span>
+        </div>
+        <button type="button" class="btn-seek-cut" title="Navegar no vídeo">▶ Ponto do corte</button>
+      `;
+
+      const btnSeek = cutItem.querySelector(".btn-seek-cut");
+      btnSeek.addEventListener("click", () => {
+        if (outputVideoPlayer) {
+          outputVideoPlayer.currentTime = st;
+          outputVideoPlayer.play();
+        }
+      });
+
+      cutsList.appendChild(cutItem);
+    });
   }
 
   function resetToEmptyState() {

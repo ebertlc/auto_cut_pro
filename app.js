@@ -288,6 +288,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const chunkName = `chunk_${i + 1}.mp4`;
         tempChunks.push(chunkName);
 
+        const chunkProgress = 65 + Math.floor(((i + 1) / speechSegments.length) * 20);
+        updateProgressUI(chunkProgress, 4, "Cortando Chunks", `Extraindo trecho ${i + 1} de ${speechSegments.length}...`);
+
         await ffmpegInstance.run(
           "-y",
           "-ss", st.toFixed(3),
@@ -304,7 +307,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const encoder = new TextEncoder();
       ffmpegInstance.FS("writeFile", "list.txt", encoder.encode(listTxt));
 
-      updateProgressUI(85, 4, "Mesclando Vídeo Final", "Concatenando todos os chunks...");
+      updateProgressUI(88, 4, "Mesclando Vídeo Final", "Concatenando todos os chunks...");
       await ffmpegInstance.run(
         "-y",
         "-f", "concat",
@@ -341,6 +344,8 @@ document.addEventListener("DOMContentLoaded", () => {
         originalDuration: totalDuration,
         finalDuration: finalDuration,
         savedDuration: savedDuration,
+        silences: silences,
+        speechSegments: speechSegments,
         videoUrl: videoUrl,
       });
 
@@ -350,6 +355,27 @@ document.addEventListener("DOMContentLoaded", () => {
       resetToEmptyState();
     }
   });
+
+  const timelineTrack = document.getElementById("timelineTrack");
+  const rulerMid = document.getElementById("rulerMid");
+  const rulerEnd = document.getElementById("rulerEnd");
+  const cutsCountText = document.getElementById("cutsCountText");
+  const btnToggleDetails = document.getElementById("btnToggleDetails");
+  const toggleDetailsText = document.getElementById("toggleDetailsText");
+  const cutsList = document.getElementById("cutsList");
+
+  if (btnToggleDetails) {
+    btnToggleDetails.addEventListener("click", () => {
+      const isHidden = cutsList.classList.contains("hidden");
+      if (isHidden) {
+        cutsList.classList.remove("hidden");
+        toggleDetailsText.textContent = "Ocultar lista de cortes";
+      } else {
+        cutsList.classList.add("hidden");
+        toggleDetailsText.textContent = "Mostrar lista de cortes";
+      }
+    });
+  }
 
   // UI Helper Functions
   function updateProgressUI(percent, stepNumber, stepName, message) {
@@ -388,6 +414,85 @@ document.addEventListener("DOMContentLoaded", () => {
     outputVideoPlayer.load();
 
     btnDownload.href = res.videoUrl;
+
+    renderTimeline(res.originalDuration, res.silences || [], res.speechSegments || []);
+  }
+
+  function renderTimeline(totalDuration, silences, speechSegments) {
+    if (!timelineTrack) return;
+    timelineTrack.innerHTML = "";
+    cutsList.innerHTML = "";
+
+    if (!totalDuration || totalDuration <= 0) return;
+
+    if (rulerMid) rulerMid.textContent = formatDuration(totalDuration / 2);
+    if (rulerEnd) rulerEnd.textContent = formatDuration(totalDuration);
+
+    const allSegments = [];
+    (speechSegments || []).forEach(([start, end]) => {
+      allSegments.push({ type: "speech", start, end });
+    });
+    (silences || []).forEach(([start, end]) => {
+      allSegments.push({ type: "silence", start, end });
+    });
+    allSegments.sort((a, b) => a.start - b.start);
+
+    allSegments.forEach((seg) => {
+      const widthPct = Math.max(0.2, ((seg.end - seg.start) / totalDuration) * 100);
+      const segEl = document.createElement("div");
+      segEl.className = `timeline-segment ${seg.type}`;
+      segEl.style.width = `${widthPct}%`;
+
+      const typeLabel = seg.type === "speech" ? "Fala" : "Silêncio Cortado";
+      const durSec = (seg.end - seg.start).toFixed(1);
+      const timeStr = `${formatDuration(seg.start)} - ${formatDuration(seg.end)}`;
+      segEl.setAttribute("data-tooltip", `${typeLabel}: ${timeStr} (${durSec}s)`);
+
+      segEl.addEventListener("click", () => {
+        if (outputVideoPlayer) {
+          outputVideoPlayer.currentTime = seg.start;
+          outputVideoPlayer.play();
+        }
+      });
+
+      timelineTrack.appendChild(segEl);
+    });
+
+    const count = silences.length;
+    if (cutsCountText) {
+      cutsCountText.textContent = `${count} ${count === 1 ? "silêncio cortado" : "silêncios cortados"}`;
+    }
+
+    if (count === 0 && cutsList) {
+      cutsList.innerHTML = `<div class="cut-item" style="color: var(--text-muted);">Nenhum intervalo de silêncio significativo foi detectado.</div>`;
+      return;
+    }
+
+    if (cutsList) {
+      silences.forEach(([st, et], idx) => {
+        const dur = (et - st).toFixed(1);
+        const cutItem = document.createElement("div");
+        cutItem.className = "cut-item";
+
+        cutItem.innerHTML = `
+          <div class="cut-time-range">
+            <span>Corte #${idx + 1}: ${formatDuration(st)} → ${formatDuration(et)}</span>
+            <span class="cut-badge-dur">-${dur}s</span>
+          </div>
+          <button type="button" class="btn-seek-cut" title="Navegar no vídeo">▶ Ponto do corte</button>
+        `;
+
+        const btnSeek = cutItem.querySelector(".btn-seek-cut");
+        btnSeek.addEventListener("click", () => {
+          if (outputVideoPlayer) {
+            outputVideoPlayer.currentTime = st;
+            outputVideoPlayer.play();
+          }
+        });
+
+        cutsList.appendChild(cutItem);
+      });
+    }
   }
 
   function resetToEmptyState() {
