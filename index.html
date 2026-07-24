@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoCut Pro - Edição 100% no Navegador (Vercel Ready)</title>
+
+  <!-- Google Fonts: Inter & Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css">
+
+  <!-- FFmpeg.wasm UMD Script -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+</head>
+<body>
+  <div class="app-background"></div>
+
+  <div class="layout-container">
+    <!-- Navbar / Header -->
+    <header class="top-header">
+      <div class="brand">
+        <div class="logo-icon">⚡</div>
+        <div>
+          <h1 class="brand-name">AutoCut <span>WASM</span></h1>
+          <p class="brand-tagline">Edição automática de vídeo 100% no navegador (Vercel Ready)</p>
+        </div>
+      </div>
+      <div class="status-badge" id="ffmpegStatus">
+        <span class="status-dot pulse"></span>
+        <span id="statusText">Aguardando início...</span>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-grid">
+      <!-- Left Column: Controls & Upload -->
+      <section class="card glass-card">
+        <h2 class="card-title">1. Enviar Vídeo & Ajustes</h2>
+
+        <!-- File Upload Zone -->
+        <div class="upload-zone" id="dropzone">
+          <input type="file" id="videoInput" accept="video/*" class="file-input">
+          <div class="upload-content" id="uploadPrompt">
+            <div class="upload-icon">📹</div>
+            <p class="upload-text"><strong>Clique ou arraste</strong> seu vídeo aqui</p>
+            <span class="upload-hint">Formatos recomendados: MP4, MOV, WebM</span>
+          </div>
+          <div class="file-preview hidden" id="filePreview">
+            <div class="file-info">
+              <span class="file-icon">🎬</span>
+              <div>
+                <h4 class="file-name" id="fileName">video.mp4</h4>
+                <span class="file-size" id="fileSize">0 MB</span>
+              </div>
+            </div>
+            <button type="button" class="btn-remove" id="btnRemoveFile" title="Remover arquivo">✕</button>
+          </div>
+        </div>
+
+        <!-- Controls Form -->
+        <form id="processForm" class="controls-form">
+          <div class="form-group">
+            <div class="label-row">
+              <label for="thresholdDb">Limiar de Ruído (dB)</label>
+              <span class="value-badge" id="thresholdDbVal">-40 dB</span>
+            </div>
+            <input type="range" id="thresholdDb" name="threshold_db" min="-60" max="-10" step="1" value="-40">
+            <span class="input-hint">Níveis menores (-50dB) detectam apenas silêncio completo.</span>
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="padding">Padding de Fala (segundos)</label>
+              <span class="value-badge" id="paddingVal">0.2s</span>
+            </div>
+            <input type="range" id="padding" name="padding" min="0.0" max="1.0" step="0.05" value="0.2">
+            <span class="input-hint">Expande as bordas do corte para evitar cortes secos nas palavras.</span>
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="minSilenceMs">Silêncio Mínimo (ms)</label>
+              <span class="value-badge" id="minSilenceMsVal">500 ms</span>
+            </div>
+            <input type="range" id="minSilenceMs" name="min_silence_ms" min="100" max="2000" step="50" value="500">
+            <span class="input-hint">Duração mínima da pausa necessária para realizar o corte.</span>
+          </div>
+
+          <button type="submit" class="btn-primary" id="btnSubmit" disabled>
+            <span class="btn-icon">⚡</span>
+            <span>Processar no Navegador (FFmpeg.wasm)</span>
+          </button>
+        </form>
+      </section>
+
+      <!-- Right Column: Progress & Results -->
+      <section class="card glass-card right-panel">
+        <h2 class="card-title">2. Progresso & Resultado</h2>
+
+        <!-- Initial Placeholder State -->
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">🌐</div>
+          <h3>Processamento 100% Client-Side</h3>
+          <p>Seus vídeos nunca saem do seu computador. O FFmpeg roda direto na memória WebAssembly do seu navegador!</p>
+        </div>
+
+        <!-- Live Progress Container -->
+        <div class="progress-container hidden" id="progressContainer">
+          <div class="progress-header">
+            <span class="stage-title" id="stageTitle">Iniciando...</span>
+            <span class="progress-percent" id="progressPercent">0%</span>
+          </div>
+
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+          </div>
+
+          <p class="progress-status-msg" id="statusMsg">Carregando módulos do navegador...</p>
+
+          <!-- Steps Tracker -->
+          <ul class="steps-list">
+            <li class="step-item" id="step1">
+              <span class="step-badge">1</span>
+              <span>Carregando Motor FFmpeg.wasm</span>
+            </li>
+            <li class="step-item" id="step2">
+              <span class="step-badge">2</span>
+              <span>Extraindo Áudio (16kHz Mono)</span>
+            </li>
+            <li class="step-item" id="step3">
+              <span class="step-badge">3</span>
+              <span>Detectando Silêncio & Fala</span>
+            </li>
+            <li class="step-item" id="step4">
+              <span class="step-badge">4</span>
+              <span>Cortando & Mesclando Vídeo Final</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Results Card -->
+        <div class="results-container hidden" id="resultsContainer">
+          <div class="results-header">
+            <span class="badge-success">✔ Processamento Concluído!</span>
+          </div>
+
+          <!-- Summary Metrics -->
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <span class="metric-label">Vídeo Original</span>
+              <span class="metric-value" id="metricOriginal">00:00</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Vídeo Final</span>
+              <span class="metric-value highlight" id="metricFinal">00:00</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Tempo Economizado</span>
+              <span class="metric-value badge-saved" id="metricSaved">00:00</span>
+            </div>
+          </div>
+
+          <!-- Video Preview -->
+          <div class="video-preview-wrapper">
+            <video id="outputVideoPlayer" controls class="video-player">
+              Seu navegador não suporta reprodução de vídeo HTML5.
+            </video>
+          </div>
+
+          <!-- Download Action -->
+          <div class="actions-row">
+            <a id="btnDownload" href="#" download="autocut_output.mp4" class="btn-download">
+              <span>📥 Baixar Vídeo Editado (.mp4)</span>
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

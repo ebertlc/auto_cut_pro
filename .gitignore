@@ -1,0 +1,17 @@
+# Python & Caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary Folders & Files
+temp_uploads/
+outputs/
+*.wav
+*.mp4
+list.txt
+chunk_*.mp4
+
+# IDE & OS
+.DS_Store
+.vscode/
+.idea/
