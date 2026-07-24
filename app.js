@@ -277,50 +277,102 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // Step 4: Cortar Chunks & Concatenar
-      updateProgressUI(65, 4, "Cortando Chunks", `Extraindo ${speechSegments.length} trechos de fala...`);
-      const tempChunks = [];
-      let listTxt = "";
+      // Step 4: Cortar Chunks & Concatenar em Lotes (Batch Concat) para Liberar Memória RAM do Navegador
+      updateProgressUI(65, 4, "Cortando Chunks", `Extraindo ${speechSegments.length} trechos de fala em lotes...`);
+      const BATCH_SIZE = 15;
+      const batchFiles = [];
+      const totalSegments = speechSegments.length;
+      const encoder = new TextEncoder();
 
-      for (let i = 0; i < speechSegments.length; i++) {
-        const [st, et] = speechSegments[i];
-        const dur = Math.max(0, et - st);
-        if (dur <= 0) continue;
+      for (let i = 0; i < totalSegments; i += BATCH_SIZE) {
+        const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
+        const currentBatchSegments = speechSegments.slice(i, i + BATCH_SIZE);
+        const currentChunks = [];
+        let batchListTxt = "";
 
-        const chunkName = `chunk_${i + 1}.mp4`;
-        tempChunks.push(chunkName);
+        for (let j = 0; j < currentBatchSegments.length; j++) {
+          const globalIdx = i + j;
+          const [st, et] = currentBatchSegments[j];
+          const dur = Math.max(0, et - st);
+          if (dur <= 0) continue;
 
-        const chunkProgress = 65 + Math.floor(((i + 1) / speechSegments.length) * 20);
-        updateProgressUI(chunkProgress, 4, "Cortando Chunks", `Extraindo trecho ${i + 1} de ${speechSegments.length}...`);
+          const chunkName = `chunk_${globalIdx + 1}.mp4`;
+          currentChunks.push(chunkName);
 
-        await ffmpegInstance.run(
-          "-y",
-          "-ss", st.toFixed(3),
-          "-i", "input.mp4",
-          "-t", dur.toFixed(3),
-          "-c", "copy",
-          chunkName
-        );
+          const chunkProgress = 65 + Math.floor(((globalIdx + 1) / totalSegments) * 22);
+          updateProgressUI(
+            chunkProgress,
+            4,
+            "Cortando Chunks",
+            `Extraindo trecho ${globalIdx + 1} de ${totalSegments}...`
+          );
 
-        // Pausa para dar tempo ao evento do navegador e garbage collector
-        await new Promise((resolve) => setTimeout(resolve, 10));
+          await ffmpegInstance.run(
+            "-y",
+            "-ss", st.toFixed(3),
+            "-i", "input.mp4",
+            "-t", dur.toFixed(3),
+            "-c", "copy",
+            chunkName
+          );
 
-        listTxt += `file '${chunkName}'\n`;
+          // Pausa para dar tempo ao event loop do navegador e garbage collector
+          await new Promise((resolve) => setTimeout(resolve, 15));
+
+          batchListTxt += `file '${chunkName}'\n`;
+        }
+
+        if (currentChunks.length > 0) {
+          const batchFileName = `batch_${batchIndex}.mp4`;
+          batchFiles.push(batchFileName);
+
+          const listFileName = `list_batch_${batchIndex}.txt`;
+          ffmpegInstance.FS("writeFile", listFileName, encoder.encode(batchListTxt));
+
+          // Concatenar este lote de trechos em um único arquivo de lote
+          await ffmpegInstance.run(
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", listFileName,
+            "-c", "copy",
+            batchFileName
+          );
+
+          // LIMPAR IMEDIATAMENTE os trechos individuais da memória RAM do navegador!
+          ffmpegInstance.FS("unlink", listFileName);
+          for (const chunk of currentChunks) {
+            try {
+              ffmpegInstance.FS("unlink", chunk);
+            } catch (err) {}
+          }
+        }
       }
 
-      // Write list.txt to WASM Virtual FS
-      const encoder = new TextEncoder();
-      ffmpegInstance.FS("writeFile", "list.txt", encoder.encode(listTxt));
+      // Concatenar os arquivos de lote gerados em um vídeo final
+      updateProgressUI(88, 4, "Mesclando Vídeo Final", "Concatenando lotes em vídeo final...");
+      let finalBatchListTxt = "";
+      for (const bFile of batchFiles) {
+        finalBatchListTxt += `file '${bFile}'\n`;
+      }
+      ffmpegInstance.FS("writeFile", "list_final.txt", encoder.encode(finalBatchListTxt));
 
-      updateProgressUI(88, 4, "Mesclando Vídeo Final", "Concatenando todos os chunks...");
       await ffmpegInstance.run(
         "-y",
         "-f", "concat",
         "-safe", "0",
-        "-i", "list.txt",
+        "-i", "list_final.txt",
         "-c", "copy",
         "output.mp4"
       );
+
+      // Limpar os arquivos de lote da memória RAM
+      ffmpegInstance.FS("unlink", "list_final.txt");
+      for (const bFile of batchFiles) {
+        try {
+          ffmpegInstance.FS("unlink", bFile);
+        } catch (err) {}
+      }
 
       // Step 5: Obter Arquivo Final em Memória
       updateProgressUI(100, 4, "Finalizando", "Gerando arquivo para download...");
@@ -332,15 +384,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const blob = new Blob([outputData.buffer], { type: "video/mp4" });
       const videoUrl = URL.createObjectURL(blob);
 
-      // Limpar arquivos no sistema virtual de arquivos
+      // Limpar arquivos restantes no sistema virtual de arquivos
       try {
         ffmpegInstance.FS("unlink", "input.mp4");
         ffmpegInstance.FS("unlink", "temp_audio.wav");
-        ffmpegInstance.FS("unlink", "list.txt");
         ffmpegInstance.FS("unlink", "output.mp4");
-        for (const chunk of tempChunks) {
-          ffmpegInstance.FS("unlink", chunk);
-        }
       } catch (err) {
         console.warn("Erro ao limpar arquivos virtuais:", err);
       }

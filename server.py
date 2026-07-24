@@ -202,64 +202,103 @@ def process_video_task(
 
         total_chunks = len(speech_segments)
 
-        # Etapa 3: Cortando Chunks com progresso incremental dinâmico
+        # Etapa 3: Cortando Chunks em lotes (Batch Processing) para evitar estouro de descritores de arquivos
         tasks_db[task_id]["step"] = 3
         tasks_db[task_id]["step_name"] = "Cortando Chunks"
         tasks_db[task_id]["progress"] = 65
-        tasks_db[task_id]["message"] = f"Extraindo {total_chunks} trecho(s) de fala sem re-codificação..."
+        tasks_db[task_id]["message"] = f"Extraindo {total_chunks} trecho(s) de fala em lotes..."
 
-        for i, (st, et) in enumerate(speech_segments, start=1):
-            dur = max(0.0, et - st)
-            if dur <= 0:
-                continue
+        BATCH_SIZE = 15
+        batch_files: List[Path] = []
 
-            # Atualização dinâmica de progresso entre 65% e 88%
-            chunk_progress = 65 + int((i / total_chunks) * 23)
-            tasks_db[task_id]["progress"] = min(88, chunk_progress)
-            tasks_db[task_id]["message"] = f"Extraindo trecho {i} de {total_chunks} ({st:.1f}s → {et:.1f}s)..."
+        for b_idx in range(0, total_chunks, BATCH_SIZE):
+            batch_num = (b_idx // BATCH_SIZE) + 1
+            batch_segments = speech_segments[b_idx : b_idx + BATCH_SIZE]
+            current_chunks: List[Path] = []
 
-            chunk_path = UPLOAD_DIR / f"{task_id}_chunk_{i}.mp4"
-            temp_chunks.append(chunk_path)
+            for j, (st, et) in enumerate(batch_segments, start=1):
+                global_i = b_idx + j
+                dur = max(0.0, et - st)
+                if dur <= 0:
+                    continue
 
-            cmd = [
-                "ffmpeg", "-y", "-ss", str(st), "-i", str(input_file_path),
-                "-t", str(dur), "-c", "copy", str(chunk_path)
-            ]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if res.returncode != 0:
-                # Tentar corte alternativo se -c copy falhar devido a alinhamento de chave
-                cmd_reencode = [
-                    "ffmpeg", "-y", "-ss", str(st), "-i", str(input_file_path),
-                    "-t", str(dur), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(chunk_path)
+                chunk_progress = 65 + int((global_i / total_chunks) * 23)
+                tasks_db[task_id]["progress"] = min(88, chunk_progress)
+                tasks_db[task_id]["message"] = f"Extraindo trecho {global_i} de {total_chunks} ({st:.1f}s → {et:.1f}s)..."
+
+                chunk_path = UPLOAD_DIR / f"{task_id}_chunk_{global_i}.mp4"
+                current_chunks.append(chunk_path)
+
+                cmd = [
+                    "ffmpeg", "-y", "-ss", f"{st:.3f}", "-i", str(input_file_path),
+                    "-t", f"{dur:.3f}", "-c", "copy", str(chunk_path)
                 ]
-                subprocess.run(cmd_reencode, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                if res.returncode != 0:
+                    cmd_reencode = [
+                        "ffmpeg", "-y", "-ss", f"{st:.3f}", "-i", str(input_file_path),
+                        "-t", f"{dur:.3f}", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(chunk_path)
+                    ]
+                    subprocess.run(cmd_reencode, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=True)
 
-        if not temp_chunks:
+            if current_chunks:
+                batch_file = UPLOAD_DIR / f"{task_id}_batch_{batch_num}.mp4"
+                batch_files.append(batch_file)
+                batch_list_file = UPLOAD_DIR / f"{task_id}_list_batch_{batch_num}.txt"
+
+                with open(batch_list_file, "w", encoding="utf-8") as f:
+                    for chunk in current_chunks:
+                        f.write(f"file '{chunk.as_posix()}'\n")
+
+                concat_cmd = [
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                    "-i", str(batch_list_file), "-c", "copy", str(batch_file)
+                ]
+                res_batch = subprocess.run(concat_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                if res_batch.returncode != 0:
+                    concat_reencode = [
+                        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                        "-i", str(batch_list_file), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(batch_file)
+                    ]
+                    subprocess.run(concat_reencode, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=True)
+
+                # Limpar trechos temporários do lote
+                if batch_list_file.exists():
+                    batch_list_file.unlink(missing_ok=True)
+                for chunk in current_chunks:
+                    if chunk.exists():
+                        chunk.unlink(missing_ok=True)
+
+        if not batch_files:
             raise ValueError("Nenhum trecho de vídeo válido pôde ser gerado.")
 
-        # Criar list.txt
+        # Criar list.txt final para unir os lotes
         with open(list_file, "w", encoding="utf-8") as f:
-            for chunk in temp_chunks:
-                f.write(f"file '{chunk.as_posix()}'\n")
+            for b_file in batch_files:
+                f.write(f"file '{b_file.as_posix()}'\n")
 
-        # Etapa 4
+        # Etapa 4: Concatenar Lotes
         tasks_db[task_id]["step"] = 4
         tasks_db[task_id]["step_name"] = "Mesclando Vídeo"
         tasks_db[task_id]["progress"] = 90
-        tasks_db[task_id]["message"] = "Unindo trechos extraídos com o concat demuxer..."
+        tasks_db[task_id]["message"] = "Unindo lotes de trechos com o concat demuxer..."
 
         concat_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
             "-i", str(list_file), "-c", "copy", str(output_file_path)
         ]
-        res_concat = subprocess.run(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        res_concat = subprocess.run(concat_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if res_concat.returncode != 0:
-            # Fallback se re-encoding for necessário no concat
             concat_reencode = [
                 "ffmpeg", "-y", "-f", "concat", "-safe", "0",
                 "-i", str(list_file), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(output_file_path)
             ]
-            subprocess.run(concat_reencode, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            subprocess.run(concat_reencode, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=True)
+
+        # Limpar arquivos de lote
+        for b_file in batch_files:
+            if b_file.exists():
+                b_file.unlink(missing_ok=True)
 
         saved_duration = max(0.0, total_duration - final_duration)
 
