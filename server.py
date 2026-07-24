@@ -99,7 +99,7 @@ def detect_silence_and_duration(
 def get_speech_segments(
     silences: List[Tuple[float, float]],
     total_duration: float,
-    padding: float = 0.2,
+    padding: float = 0.1,
 ) -> List[Tuple[float, float]]:
     if total_duration <= 0:
         return []
@@ -124,37 +124,27 @@ def get_speech_segments(
             else:
                 merged_silences.append((st, et))
 
-    raw_speech = []
+    if not merged_silences:
+        return [(0.0, round(total_duration, 4))]
+
+    speech_segments = []
     current_time = 0.0
 
-    for st, et in merged_silences:
-        if st > current_time:
-            raw_speech.append((current_time, st))
-        current_time = max(current_time, et)
+    for s_start, s_end in merged_silences:
+        silence_dur = s_end - s_start
+        safe_pad = max(0.0, min(padding, (silence_dur / 2.0) - 0.02))
+
+        speech_end = s_start + safe_pad
+        next_speech_start = s_end - safe_pad
+
+        if speech_end > current_time:
+            speech_segments.append((current_time, speech_end))
+        current_time = next_speech_start
 
     if current_time < total_duration:
-        raw_speech.append((current_time, total_duration))
+        speech_segments.append((current_time, total_duration))
 
-    padded_speech = []
-    for st, et in raw_speech:
-        pst = max(0.0, st - padding)
-        pet = min(total_duration, et + padding)
-        if pet > pst:
-            padded_speech.append((pst, pet))
-
-    final_speech = []
-    min_gap = 0.6  # Pausas de silêncio menores que 0.6s após padding são unificadas para ritmo natural e evitar cortes picotados
-    for st, et in padded_speech:
-        if not final_speech:
-            final_speech.append((st, et))
-        else:
-            pst, pet = final_speech[-1]
-            if st - pet < min_gap:
-                final_speech[-1] = (pst, max(pet, et))
-            else:
-                final_speech.append((st, et))
-
-    return [(round(s, 4), round(e, 4)) for s, e in final_speech]
+    return [(round(s, 4), round(e, 4)) for s, e in speech_segments if e > s]
 
 
 def process_video_task(

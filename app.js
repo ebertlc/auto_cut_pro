@@ -117,72 +117,63 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // 4. Mathematical Logic for Speech Segments
-  function getSpeechSegments(silences, totalDuration, padSec = 0.2) {
-    if (totalDuration <= 0) return [];
+  function getSpeechSegments(silences, totalDuration, padSec = 0.1) {
+    if (!totalDuration || totalDuration <= 0) return [];
 
-    const clamped = silences
+    const clamped = (silences || [])
       .map(([s, e]) => [
-        Math.max(0, Math.min(totalDuration, s)),
-        Math.max(0, Math.min(totalDuration, e)),
+        Math.max(0, Math.min(totalDuration, Number(s))),
+        Math.max(0, Math.min(totalDuration, Number(e))),
       ])
       .filter(([s, e]) => e > s)
       .sort((a, b) => a[0] - b[0]);
 
     const mergedSilences = [];
-    for (const [s, e] of clamped) {
+    for (const [st, et] of clamped) {
       if (mergedSilences.length === 0) {
-        mergedSilences.push([s, e]);
+        mergedSilences.push([st, et]);
       } else {
         const prev = mergedSilences[mergedSilences.length - 1];
-        if (s <= prev[1]) {
-          prev[1] = Math.max(prev[1], e);
+        if (st <= prev[1]) {
+          prev[1] = Math.max(prev[1], et);
         } else {
-          mergedSilences.push([s, e]);
+          mergedSilences.push([st, et]);
         }
       }
     }
 
-    const rawSpeech = [];
+    if (mergedSilences.length === 0) {
+      return [[0, Number(totalDuration.toFixed(3))]];
+    }
+
+    const speechSegments = [];
     let currentTime = 0;
+
     for (const [sStart, sEnd] of mergedSilences) {
-      if (sStart > currentTime) {
-        rawSpeech.push([currentTime, sStart]);
+      const silenceDur = sEnd - sStart;
+      // Padding seguro que nunca anula o silêncio (máximo de 40% da duração do silêncio de cada lado)
+      const safePad = Math.max(0, Math.min(padSec, (silenceDur / 2.0) - 0.02));
+
+      const speechEnd = sStart + safePad;
+      const nextSpeechStart = sEnd - safePad;
+
+      if (speechEnd > currentTime) {
+        speechSegments.push([
+          Number(currentTime.toFixed(3)),
+          Number(speechEnd.toFixed(3)),
+        ]);
       }
-      currentTime = Math.max(currentTime, sEnd);
+      currentTime = nextSpeechStart;
     }
+
     if (currentTime < totalDuration) {
-      rawSpeech.push([currentTime, totalDuration]);
+      speechSegments.push([
+        Number(currentTime.toFixed(3)),
+        Number(totalDuration.toFixed(3)),
+      ]);
     }
 
-    const paddedSpeech = [];
-    for (const [s, e] of rawSpeech) {
-      const pStart = Math.max(0, s - padSec);
-      const pEnd = Math.min(totalDuration, e + padSec);
-      if (pEnd > pStart) {
-        paddedSpeech.push([pStart, pEnd]);
-      }
-    }
-
-    // Merging speech blocks separated by gaps smaller than minGap (0.6s) to ensure natural speech rhythm and reduce fragment count
-    const minGap = 0.6;
-    const finalSpeech = [];
-    for (const [s, e] of paddedSpeech) {
-      if (finalSpeech.length === 0) {
-        finalSpeech.push([s, e]);
-      } else {
-        const prev = finalSpeech[finalSpeech.length - 1];
-        if (s - prev[1] < minGap) {
-          prev[1] = Math.max(prev[1], e);
-        } else {
-          finalSpeech.push([s, e]);
-        }
-      }
-    }
-
-    return finalSpeech.map(([s, e]) => [
-      Number(s.toFixed(3)),
-      Number(e.toFixed(3)),
-    ]);
+    return speechSegments.filter(([s, e]) => e > s);
   }
 
   const consoleBody = document.getElementById("consoleBody");

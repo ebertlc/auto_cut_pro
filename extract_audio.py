@@ -73,21 +73,11 @@ def extract_audio(
 def get_speech_segments(
     silences: List[Tuple[float, float]],
     total_duration: float,
-    padding: float = 0.2,
+    padding: float = 0.1,
 ) -> List[Tuple[float, float]]:
-    """
-    Calcula os intervalos de fala a serem mantidos com base na lista de silêncios
-    e na duração total do vídeo.
-
-    :param silences: Lista de tuplas (inicio, fim) indicando intervalos de silêncio em segundos.
-    :param total_duration: Duração total do vídeo em segundos.
-    :param padding: Margem em segundos para expandir cada bloco de fala (padrão: 0.2s).
-    :return: Lista de tuplas (start, end) dos blocos de fala ajustados e mesclados.
-    """
     if total_duration <= 0:
         return []
 
-    # 1. Ajustar e ordenar os silêncios dentro dos limites [0, total_duration]
     clamped_silences = []
     for s_start, s_end in silences:
         start = max(0.0, min(total_duration, float(s_start)))
@@ -97,7 +87,6 @@ def get_speech_segments(
 
     clamped_silences.sort(key=lambda x: x[0])
 
-    # Mesclar silêncios sobrepostos
     merged_silences = []
     for start, end in clamped_silences:
         if not merged_silences:
@@ -109,40 +98,27 @@ def get_speech_segments(
             else:
                 merged_silences.append((start, end))
 
-    # 2. Obter os intervalos de fala brutos (inverso do silêncio)
-    raw_speech = []
+    if not merged_silences:
+        return [(0.0, round(total_duration, 4))]
+
+    speech_segments = []
     current_time = 0.0
 
     for s_start, s_end in merged_silences:
-        if s_start > current_time:
-            raw_speech.append((current_time, s_start))
-        current_time = max(current_time, s_end)
+        silence_dur = s_end - s_start
+        safe_pad = max(0.0, min(padding, (silence_dur / 2.0) - 0.02))
+
+        speech_end = s_start + safe_pad
+        next_speech_start = s_end - safe_pad
+
+        if speech_end > current_time:
+            speech_segments.append((current_time, speech_end))
+        current_time = next_speech_start
 
     if current_time < total_duration:
-        raw_speech.append((current_time, total_duration))
+        speech_segments.append((current_time, total_duration))
 
-    # 3. Aplicar padding nos blocos de fala e limitar entre 0 e total_duration
-    padded_speech = []
-    for start, end in raw_speech:
-        padded_start = max(0.0, start - padding)
-        padded_end = min(total_duration, end + padding)
-        if padded_end > padded_start:
-            padded_speech.append((padded_start, padded_end))
-
-    # 4. Mesclar blocos de fala que se sobrepõem após o padding
-    final_speech = []
-    min_gap = 0.35  # Pausas de silêncio menores que 0.35s após padding são unificadas para evitar centenas de micro-cortes
-    for start, end in padded_speech:
-        if not final_speech:
-            final_speech.append((start, end))
-        else:
-            prev_start, prev_end = final_speech[-1]
-            if start - prev_end < min_gap:
-                final_speech[-1] = (prev_start, max(prev_end, end))
-            else:
-                final_speech.append((start, end))
-
-    return [(round(s, 4), round(e, 4)) for s, e in final_speech]
+    return [(round(s, 4), round(e, 4)) for s, e in speech_segments if e > s]
 
 
 def cut_video(

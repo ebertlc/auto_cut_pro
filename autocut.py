@@ -54,7 +54,7 @@ def log_success(msg: str):
 def log_error(msg: str):
     """Exibe mensagem de erro."""
     if HAS_RICH and console:
-        console.print(f"[error]✖ {msg}[/error]", stderr=True)
+        console.print(f"[error]✖ {msg}[/error]")
     else:
         print(f"✖ {msg}", file=sys.stderr)
 
@@ -166,16 +166,11 @@ def detect_silence_and_duration(
 def get_speech_segments(
     silences: List[Tuple[float, float]],
     total_duration: float,
-    padding: float = 0.2,
+    padding: float = 0.1,
 ) -> List[Tuple[float, float]]:
-    """
-    Calcula os intervalos de fala a serem mantidos com base no inverso dos silêncios
-    e na aplicação do padding especificado.
-    """
     if total_duration <= 0:
         return []
 
-    # Clamp e ordenação de silêncios
     clamped_silences = []
     for s_start, s_end in silences:
         start = max(0.0, min(total_duration, float(s_start)))
@@ -185,7 +180,6 @@ def get_speech_segments(
 
     clamped_silences.sort(key=lambda x: x[0])
 
-    # Mesclar silêncios sobrepostos
     merged_silences = []
     for start, end in clamped_silences:
         if not merged_silences:
@@ -197,40 +191,27 @@ def get_speech_segments(
             else:
                 merged_silences.append((start, end))
 
-    # Inverso do silêncio = intervalos de fala
-    raw_speech = []
+    if not merged_silences:
+        return [(0.0, round(total_duration, 4))]
+
+    speech_segments = []
     current_time = 0.0
 
     for s_start, s_end in merged_silences:
-        if s_start > current_time:
-            raw_speech.append((current_time, s_start))
-        current_time = max(current_time, s_end)
+        silence_dur = s_end - s_start
+        safe_pad = max(0.0, min(padding, (silence_dur / 2.0) - 0.02))
+
+        speech_end = s_start + safe_pad
+        next_speech_start = s_end - safe_pad
+
+        if speech_end > current_time:
+            speech_segments.append((current_time, speech_end))
+        current_time = next_speech_start
 
     if current_time < total_duration:
-        raw_speech.append((current_time, total_duration))
+        speech_segments.append((current_time, total_duration))
 
-    # Aplicar padding e limitar a [0, total_duration]
-    padded_speech = []
-    for start, end in raw_speech:
-        padded_start = max(0.0, start - padding)
-        padded_end = min(total_duration, end + padding)
-        if padded_end > padded_start:
-            padded_speech.append((padded_start, padded_end))
-
-    # Mesclar blocos de fala sobrepostos devido ao padding
-    final_speech = []
-    min_gap = 0.6  # Pausas de silêncio menores que 0.6s após padding são unificadas para ritmo natural e evitar cortes picotados
-    for start, end in padded_speech:
-        if not final_speech:
-            final_speech.append((start, end))
-        else:
-            prev_start, prev_end = final_speech[-1]
-            if start - prev_end < min_gap:
-                final_speech[-1] = (prev_start, max(prev_end, end))
-            else:
-                final_speech.append((start, end))
-
-    return [(round(s, 4), round(e, 4)) for s, e in final_speech]
+    return [(round(s, 4), round(e, 4)) for s, e in speech_segments if e > s]
 
 
 def cut_and_concat(
