@@ -152,14 +152,7 @@ def cut_video(
 ) -> str:
     """
     Corta o vídeo original com base na lista de intervalos de fala (start, end).
-    Extrai cada trecho com '-c copy' em arquivos temporários (chunk_1.mp4, etc.),
-    concatena todos os trechos via concat demuxer em 'output.mp4' e limpa os
-    arquivos temporários ao final.
-
-    :param video_path: Caminho para o vídeo de entrada.
-    :param speech_segments: Lista de tuplas (start, end) dos trechos de fala.
-    :param output_path: Caminho do vídeo de saída gerado (padrão: output.mp4).
-    :return: Caminho do arquivo de vídeo final.
+    Executa a renderização precisa em passagem única via script de filtro complexo do FFmpeg.
     """
     if not is_ffmpeg_installed():
         raise RuntimeError("Erro: O FFmpeg não foi encontrado no sistema.")
@@ -172,72 +165,44 @@ def cut_video(
         print("Nenhum segmento de fala fornecido. Nenhum vídeo gerado.")
         return output_path
 
-    temp_files: List[Path] = []
-    list_file_path = Path("list.txt")
+    filter_file = Path("filter_script.txt")
 
     try:
-        # 1. Extrair cada trecho de fala para um arquivo temporário chunk_N.mp4
-        for i, (start, end) in enumerate(speech_segments, start=1):
+        filter_lines = []
+        concat_inputs = []
+
+        for k, (start, end) in enumerate(speech_segments):
             duration = max(0.0, end - start)
             if duration <= 0:
                 continue
+            filter_lines.append(f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[v{k}];")
+            filter_lines.append(f"[0:a]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[a{k}];")
+            concat_inputs.append(f"[v{k}][a{k}]")
 
-            chunk_name = Path(f"chunk_{i}.mp4")
-            temp_files.append(chunk_name)
-
-            # Colocar o -ss antes do -i para busca rápida de keyframes
-            command = [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                str(start),
-                "-i",
-                str(video_file),
-                "-t",
-                str(duration),
-                "-c",
-                "copy",
-                str(chunk_name),
-            ]
-
-            print(
-                f"Extraindo trecho {i}/{len(speech_segments)} "
-                f"({start:.2f}s até {end:.2f}s, duração {duration:.2f}s)..."
-            )
-            subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True,
-            )
-
-        if not temp_files:
+        if not concat_inputs:
             raise ValueError("Nenhum trecho de fala válido pôde ser extraído.")
 
-        # 2. Criar o arquivo list.txt para o FFmpeg concat demuxer
-        with open(list_file_path, "w", encoding="utf-8") as f:
-            for chunk_file in temp_files:
-                f.write(f"file '{chunk_file.as_posix()}'\n")
+        filter_lines.append(f"{''.join(concat_inputs)}concat=n={len(concat_inputs)}:v=1:a=1[outv][outa]")
 
-        # 3. Concatenar os chunks em output.mp4
-        concat_command = [
+        with open(filter_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(filter_lines))
+
+        command = [
             "ffmpeg",
             "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(list_file_path),
-            "-c",
-            "copy",
+            "-i", str(video_file),
+            "-filter_complex_script", str(filter_file),
+            "-map", "[outv]",
+            "-map", "[outa]",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-c:a", "aac",
             output_path,
         ]
 
-        print(f"Unindo {len(temp_files)} trecho(s) em '{output_path}'...")
+        print(f"Renderizando {len(concat_inputs)} trecho(s) com corte preciso em '{output_path}'...")
         subprocess.run(
-            concat_command,
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -252,20 +217,11 @@ def cut_video(
         raise e
 
     finally:
-        # 4. Limpar todos os arquivos temporários (chunks e list.txt)
-        print("Limpando arquivos temporários...")
-        for temp_file in temp_files:
-            if temp_file.exists():
-                try:
-                    temp_file.unlink()
-                except Exception as err:
-                    print(f"Aviso: Não foi possível remover {temp_file}: {err}", file=sys.stderr)
-
-        if list_file_path.exists():
+        if filter_file.exists():
             try:
-                list_file_path.unlink()
-            except Exception as err:
-                print(f"Aviso: Não foi possível remover {list_file_path}: {err}", file=sys.stderr)
+                filter_file.unlink()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

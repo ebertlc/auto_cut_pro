@@ -239,77 +239,61 @@ def cut_and_concat(
     output_path: Path,
 ) -> Path:
     """
-    Etapa 3 & 4: Corta os chunks temporários usando '-c copy' (-ss antes de -i)
-    e os unifica com o concat demuxer do FFmpeg.
+    Etapa 3 & 4: Corta e mescla o vídeo em passagem única com precisão de frame
+    utilizando script de filtro complexo do FFmpeg.
     """
-    temp_chunks: List[Path] = []
-    list_file = Path("list.txt")
+    filter_file = Path("filter_script.txt")
 
     try:
-        log_step(3, 4, "Cortando Chunks")
+        log_step(3, 4, "Gerando Filtro de Corte Preciso")
         total_chunks = len(speech_segments)
 
-        for i, (start, end) in enumerate(speech_segments, start=1):
+        filter_lines = []
+        concat_inputs = []
+
+        for k, (start, end) in enumerate(speech_segments):
             duration = max(0.0, end - start)
             if duration <= 0:
                 continue
+            filter_lines.append(f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[v{k}];")
+            filter_lines.append(f"[0:a]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[a{k}];")
+            concat_inputs.append(f"[v{k}][a{k}]")
 
-            chunk_path = Path(f"chunk_{i}.mp4")
-            temp_chunks.append(chunk_path)
-
-            command = [
-                "ffmpeg",
-                "-y",
-                "-ss", str(start),
-                "-i", str(video_path),
-                "-t", str(duration),
-                "-c", "copy",
-                str(chunk_path),
-            ]
-
-            log_info(f"Extraindo chunk {i}/{total_chunks} ({start:.2f}s → {end:.2f}s)...")
-            res = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if res.returncode != 0:
-                raise subprocess.CalledProcessError(res.returncode, command, output=res.stdout, stderr=res.stderr)
-
-        if not temp_chunks:
+        if not concat_inputs:
             raise ValueError("Nenhum trecho de fala válido pôde ser extraído do vídeo.")
 
-        # Criar list.txt para o concat demuxer
-        with open(list_file, "w", encoding="utf-8") as f:
-            for chunk in temp_chunks:
-                f.write(f"file '{chunk.as_posix()}'\n")
+        filter_lines.append(f"{''.join(concat_inputs)}concat=n={len(concat_inputs)}:v=1:a=1[outv][outa]")
 
-        log_step(4, 4, "Mesclando Trechos (Concat)")
-        concat_command = [
+        with open(filter_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(filter_lines))
+
+        log_step(4, 4, "Renderizando Vídeo Final")
+        log_info(f"Renderizando {len(concat_inputs)} trecho(s) com precisão milimétrica em '{output_path.name}'...")
+
+        command = [
             "ffmpeg",
             "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(list_file),
-            "-c", "copy",
+            "-i", str(video_path),
+            "-filter_complex_script", str(filter_file),
+            "-map", "[outv]",
+            "-map", "[outa]",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-c:a", "aac",
             str(output_path),
         ]
 
-        log_info(f"Unindo {len(temp_chunks)} chunks em '{output_path.name}'...")
-        concat_res = subprocess.run(concat_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if concat_res.returncode != 0:
-            raise subprocess.CalledProcessError(concat_res.returncode, concat_command, output=concat_res.stdout, stderr=concat_res.stderr)
+        res = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0:
+            raise subprocess.CalledProcessError(res.returncode, command, output=res.stdout, stderr=res.stderr)
 
-        log_success(f"Vídeo mesclado gerado: {output_path}")
+        log_success(f"Vídeo final cortado gerado: {output_path}")
         return output_path
 
     finally:
-        # Limpeza de arquivos temporários
-        for chunk in temp_chunks:
-            if chunk.exists():
-                try:
-                    chunk.unlink()
-                except Exception:
-                    pass
-        if list_file.exists():
+        if filter_file.exists():
             try:
-                list_file.unlink()
+                filter_file.unlink()
             except Exception:
                 pass
 
