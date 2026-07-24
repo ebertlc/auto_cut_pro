@@ -36,13 +36,33 @@ STATIC_DIR.mkdir(exist_ok=True)
 tasks_db: Dict[str, dict] = {}
 
 
+def get_ffmpeg_exe() -> str:
+    path = shutil.which("ffmpeg")
+    if path:
+        return path
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.exists(exe):
+            return exe
+    except Exception:
+        pass
+    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/nix/var/nix/profiles/default/bin/ffmpeg"]:
+        if os.path.exists(p):
+            return p
+    return "ffmpeg"
+
+
 def check_ffmpeg() -> bool:
+    exe = get_ffmpeg_exe()
+    if exe != "ffmpeg" and os.path.exists(exe):
+        return True
     return shutil.which("ffmpeg") is not None
 
 
 def extract_audio(video_path: Path, output_audio_path: Path):
     command = [
-        "ffmpeg",
+        get_ffmpeg_exe(),
         "-y",
         "-i", str(video_path),
         "-vn",
@@ -63,7 +83,7 @@ def detect_silence_and_duration(
 ) -> Tuple[List[Tuple[float, float]], float]:
     min_silence_sec = min_silence_ms / 1000.0
     command = [
-        "ffmpeg",
+        get_ffmpeg_exe(),
         "-hide_banner",
         "-i", str(audio_path),
         "-af", f"silencedetect=noise={threshold_db}dB:d={min_silence_sec}",
@@ -223,7 +243,7 @@ def process_video_task(
         tasks_db[task_id]["message"] = "Renderizando vídeo final com remoção real de silêncio..."
 
         render_cmd = [
-            "ffmpeg", "-y", "-i", str(input_file_path),
+            get_ffmpeg_exe(), "-y", "-i", str(input_file_path),
             "-filter_complex_script", str(filter_script_file),
             "-map", "[outv]", "-map", "[outa]",
             "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",

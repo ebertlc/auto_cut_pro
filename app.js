@@ -1,16 +1,10 @@
 document.addEventListener("DOMContentLoaded", () => {
   // ==========================================================================
-  // CONFIGURAÇÃO DO BACKEND
-  // Se o frontend (este site) estiver hospedado separadamente do backend
-  // (ex: frontend no Vercel + backend no Railway/Render/Fly.io), defina aqui
-  // a URL pública do backend. Deixe como string vazia ("") se o frontend e o
-  // backend estiverem no MESMO domínio (ex: rodando localmente via server.py).
-  // Exemplo: const API_BASE_URL = "https://auto-cut-pro-backend.up.railway.app";
+  // CONFIGURAÇÃO DO BACKEND (RAILWAY)
   // ==========================================================================
   const API_BASE_URL = "https://autocutpro-production.up.railway.app";
 
   function apiUrl(path) {
-    // Evita barra dupla caso API_BASE_URL termine com "/"
     return `${API_BASE_URL.replace(/\/$/, "")}${path}`;
   }
 
@@ -49,27 +43,48 @@ document.addEventListener("DOMContentLoaded", () => {
   const outputVideoPlayer = document.getElementById("outputVideoPlayer");
   const btnDownload = document.getElementById("btnDownload");
 
+  const consoleBody = document.getElementById("consoleBody");
+  const liveStatsBar = document.getElementById("liveStatsBar");
+  const liveSilencesCount = document.getElementById("liveSilencesCount");
+  const liveSpeechCount = document.getElementById("liveSpeechCount");
+  const liveEstDuration = document.getElementById("liveEstDuration");
+
   let selectedFile = null;
   let ffmpegInstance = null;
 
-  // 1. Initialize FFmpeg.wasm
+  // 1. Initialize FFmpeg.wasm & Check Server Status
   function initFFmpeg() {
-    if (typeof FFmpeg === "undefined") {
-      statusText.textContent = "Erro ao carregar FFmpeg.wasm";
-      statusBadge.querySelector(".status-dot").style.backgroundColor = "#ef4444";
-      return null;
-    }
+    if (typeof FFmpeg === "undefined") return null;
     const { createFFmpeg } = FFmpeg;
-    const instance = createFFmpeg({
+    return createFFmpeg({
       log: true,
       corePath: "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
     });
-    statusText.textContent = "FFmpeg.wasm Suportado";
-    statusBadge.querySelector(".status-dot").style.backgroundColor = "#06b6d4";
-    return instance;
   }
 
   ffmpegInstance = initFFmpeg();
+
+  async function checkServerStatus() {
+    if (!statusText) return;
+    try {
+      const res = await fetch(apiUrl("/api/status"), { method: "GET", cache: "no-store" });
+      if (res.ok) {
+        statusText.textContent = "Servidor Railway Conectado (30x Rápido)";
+        const dot = statusBadge ? statusBadge.querySelector(".status-dot") : null;
+        if (dot) dot.style.backgroundColor = "#10b981";
+      } else {
+        statusText.textContent = "Modo Navegador (Servidor Offline)";
+        const dot = statusBadge ? statusBadge.querySelector(".status-dot") : null;
+        if (dot) dot.style.backgroundColor = "#06b6d4";
+      }
+    } catch (err) {
+      statusText.textContent = "Modo Navegador (WASM Active)";
+      const dot = statusBadge ? statusBadge.querySelector(".status-dot") : null;
+      if (dot) dot.style.backgroundColor = "#06b6d4";
+    }
+  }
+
+  checkServerStatus();
 
   // 2. Interactive Slider Label Updates
   thresholdDb.addEventListener("input", (e) => {
@@ -131,7 +146,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.dataTransfer.files.length > 0) setFile(e.dataTransfer.files[0]);
   });
 
-  // 4. Mathematical Logic for Speech Segments
   function getSpeechSegments(silences, totalDuration, padSec = 0.1) {
     if (!totalDuration || totalDuration <= 0) return [];
 
@@ -166,7 +180,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     for (const [sStart, sEnd] of mergedSilences) {
       const silenceDur = sEnd - sStart;
-      // Padding seguro que nunca anula o silêncio (máximo de 40% da duração do silêncio de cada lado)
       const safePad = Math.max(0, Math.min(padSec, (silenceDur / 2.0) - 0.02));
 
       const speechEnd = sStart + safePad;
@@ -191,12 +204,6 @@ document.addEventListener("DOMContentLoaded", () => {
     return speechSegments.filter(([s, e]) => e > s);
   }
 
-  const consoleBody = document.getElementById("consoleBody");
-  const liveStatsBar = document.getElementById("liveStatsBar");
-  const liveSilencesCount = document.getElementById("liveSilencesCount");
-  const liveSpeechCount = document.getElementById("liveSpeechCount");
-  const liveEstDuration = document.getElementById("liveEstDuration");
-
   function logToConsole(message, type = "info") {
     if (!consoleBody) return;
     const now = new Date();
@@ -220,16 +227,15 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/>/g, "&gt;");
   }
 
-  // 5. Hybrid Auto-Switch Execution Workflow (Native Server vs Browser WASM)
+  // 4. Hybrid Execution Workflow (Primary Railway Backend -> Fallback Browser WASM)
   processForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!selectedFile) return;
 
-    // Reset Console
+    // Reset UI & Console
     if (consoleBody) consoleBody.innerHTML = "";
     if (liveStatsBar) liveStatsBar.classList.add("hidden");
 
-    // UI Updates
     emptyState.classList.add("hidden");
     resultsContainer.classList.add("hidden");
     progressContainer.classList.remove("hidden");
@@ -237,73 +243,60 @@ document.addEventListener("DOMContentLoaded", () => {
 
     logToConsole(`Iniciando AutoCut Pro para '${selectedFile.name}' (${formatBytes(selectedFile.size)})...`, "info");
 
-    // 1. Verificação de Servidor Nativo Local (FastAPI python server.py)
-    let isNativeServerOnline = false;
+    // TENTATIVA 1: Processar no Servidor Backend (Railway)
+    logToConsole(`Verificando disponibilidade do servidor em ${apiUrl("/api/status")}...`, "info");
+
     try {
-      const statusRes = await fetch(apiUrl("/api/status"), { method: "GET", cache: "no-store" });
-      if (statusRes.ok) {
-        const statusData = await statusRes.json();
-        if (statusData.ffmpeg_installed) {
-          isNativeServerOnline = true;
-        }
-      }
-    } catch (err) {
-      isNativeServerOnline = false;
-    }
-
-    if (isNativeServerOnline) {
-      // MODO SERVIDOR NATIVO LOCAL: 30x mais rápido (aproveita todos os núcleos do CPU/GPU do sistema)
-      logToConsole("🚀 Servidor Nativo Detectado! Utilizando aceleração máxima de hardware (30x mais rápido)...", "success");
-      updateProgressUI(10, 1, "Enviando para Servidor Nativo", "Transmitindo arquivo para o engine nativo...");
-
       const formData = new FormData();
       formData.append("video", selectedFile);
       formData.append("threshold_db", thresholdDb.value);
       formData.append("padding", padding.value);
       formData.append("min_silence_ms", minSilenceMs.value);
 
-      try {
-        const uploadRes = await fetch(apiUrl("/api/process"), {
-          method: "POST",
-          body: formData,
-        });
+      updateProgressUI(10, 1, "Enviando para Servidor Railway", "Transmitindo arquivo para o backend...");
 
-        if (!uploadRes.ok) throw new Error("Falha ao comunicar com o servidor nativo.");
+      const uploadRes = await fetch(apiUrl("/api/process"), {
+        method: "POST",
+        body: formData,
+      });
+
+      if (uploadRes.ok) {
         const uploadData = await uploadRes.json();
-        
-        logToConsole(`✔ Upload concluído. ID da Tarefa: ${uploadData.task_id}. Processando no sistema nativo...`, "info");
+        logToConsole(`🚀 Servidor Backend Conectado! Tarefa iniciada: ${uploadData.task_id}`, "success");
+        logToConsole("⚡ Processando com aceleração no servidor Railway (30x mais rápido)...", "info");
         startNativeProgressPolling(uploadData.task_id);
-        return;
-      } catch (err) {
-        logToConsole(`⚠ Falha no servidor nativo (${err.message}). Recorrendo ao modo WebAssembly do navegador...`, "warning");
+        return; // Sucesso no servidor!
+      } else {
+        logToConsole(`⚠ Servidor backend respondeu com erro (${uploadRes.status}). Recorrendo ao modo WebAssembly do navegador...`, "warning");
       }
-    } else {
-      logToConsole("ℹ Servidor nativo não detectado. Este site (versão hospedada) processa 100% no seu navegador via WebAssembly.", "info");
-      logToConsole("💡 Para processar 10-30x mais rápido e sem sobrecarregar seu PC: baixe o projeto e rode 'python server.py' localmente.", "warning");
+    } catch (err) {
+      logToConsole(`⚠ Servidor backend indisponível (${err.message}). Recorrendo ao modo WebAssembly do navegador...`, "warning");
+    }
 
-      // Aviso preventivo para vídeos grandes
-      const sizeMB = selectedFile.size / (1024 * 1024);
-      const LARGE_FILE_MB = 100;
-      if (sizeMB > LARGE_FILE_MB) {
-        const proceed = confirm(
-          `Este vídeo tem ${sizeMB.toFixed(0)}MB e será processado 100% no navegador (sem servidor nativo detectado).\n\n` +
-          `Isso pode levar bastante tempo e manter o uso de CPU do seu computador alto durante o processamento.\n\n` +
-          `Recomendado: rode 'python server.py' localmente para processar em segundos, com uso de recursos muito menor.\n\n` +
-          `Deseja continuar mesmo assim no navegador?`
-        );
-        if (!proceed) {
-          logToConsole("✖ Processamento cancelado pelo usuário.", "warning");
-          resetToEmptyState();
-          return;
-        }
+    // TENTATIVA 2: FALLBACK para WebAssembly no Navegador
+    logToConsole("ℹ Servidor indisponível ou offline. O vídeo será processado no seu navegador via WebAssembly (FFmpeg.wasm).", "info");
+
+    const sizeMB = selectedFile.size / (1024 * 1024);
+    const LARGE_FILE_MB = 100;
+    if (sizeMB > LARGE_FILE_MB) {
+      const proceed = confirm(
+        `O servidor remoto está offline e este vídeo tem ${sizeMB.toFixed(0)}MB.\n\n` +
+        `O processamento no navegador pode levar alguns minutos e utilizar bastante CPU do seu computador.\n\n` +
+        `Deseja continuar mesmo assim no seu navegador?`
+      );
+      if (!proceed) {
+        logToConsole("✖ Processamento cancelado pelo usuário.", "warning");
+        resetToEmptyState();
+        return;
       }
     }
 
-    // 2. MODO BROWSER WEBASSEMBLY (Client-Side Fallback)
     try {
+      if (typeof FFmpeg === "undefined") {
+        throw new Error("Módulo FFmpeg.wasm não foi carregado na página.");
+      }
       const { fetchFile } = FFmpeg;
 
-      // Step 1: Load FFmpeg into browser memory
       updateProgressUI(5, 1, "Carregando Engine FFmpeg", "Inicializando ambiente WebAssembly...");
       logToConsole("Carregando módulos do FFmpeg.wasm na memória RAM...", "info");
 
@@ -317,7 +310,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ffmpegInstance.FS("writeFile", "input.mp4", await fetchFile(selectedFile));
       logToConsole("✔ Arquivo montado com sucesso na memória virtual.", "success");
 
-      // Step 2: Extrair Áudio
+      // Extrair Áudio
       updateProgressUI(30, 2, "Extraindo Áudio", "Convertendo faixa sonora para WAV 16kHz mono...");
       logToConsole("Executando FFmpeg: extraindo faixa de áudio WAV (16000Hz mono PCM)...", "info");
       await ffmpegInstance.run(
@@ -331,7 +324,7 @@ document.addEventListener("DOMContentLoaded", () => {
       );
       logToConsole("✔ Áudio extraído: temp_audio.wav criado.", "success");
 
-      // Step 3: Detectar Silêncio
+      // Detectar Silêncio
       updateProgressUI(45, 3, "Detectando Silêncio", "Analisando frequências sonoras...");
       const dbVal = parseFloat(thresholdDb.value);
       const minMs = parseFloat(minSilenceMs.value);
@@ -362,7 +355,6 @@ document.addEventListener("DOMContentLoaded", () => {
           const currentTimeSec = h * 3600 + m * 60 + s;
 
           const speedMatch = message.match(/speed=\s*([\d\.]+)x/);
-          const fpsMatch = message.match(/fps=\s*([\d\.]+)/);
           const frameMatch = message.match(/frame=\s*(\d+)/);
 
           const speedStr = speedMatch ? `${speedMatch[1]}x` : "1.0x";
@@ -401,7 +393,6 @@ document.addEventListener("DOMContentLoaded", () => {
       );
 
       const fullLog = ffmpegLogs.join("\n");
-      
       let totalDuration = 0;
       const durationMatch = fullLog.match(/Duration:\s*(\d+):(\d+):([\d\.]+)/);
       if (durationMatch) {
@@ -428,7 +419,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const padSec = parseFloat(padding.value);
       const speechSegments = getSpeechSegments(silences, totalDuration, padSec);
-
       const estDuration = speechSegments.reduce((acc, [st, et]) => acc + (et - st), 0);
 
       logToConsole(`✔ Análise concluída: ${silences.length} silêncio(s) detectado(s).`, "success");
@@ -448,9 +438,9 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
+      // Cortar & Recodificar
       updateProgressUI(65, 4, "Cortando & Recodificando Vídeo Final", `Preparando corte preciso de ${speechSegments.length} trecho(s) de fala...`);
-      logToConsole(`✂ Gerando corte preciso (passagem única) para ${speechSegments.length} trecho(s)...`, "info");
-      logToConsole("ℹ Este passo recodifica o vídeo para garantir precisão — pode levar alguns minutos dependendo do tamanho do arquivo e do seu computador.", "info");
+      logToConsole(`✂ Gerando corte preciso para ${speechSegments.length} trecho(s)...`, "info");
 
       const encoder = new TextEncoder();
       let filterScript = "";
@@ -484,8 +474,6 @@ document.addEventListener("DOMContentLoaded", () => {
         ffmpegInstance.FS("unlink", "filter.txt");
       } catch (err) {}
 
-      logToConsole("✔ Vídeo cortado com precisão de frame, sem acúmulo de duração extra.", "success");
-
       updateProgressUI(100, 4, "Finalizando", "Gerando arquivo para download...");
       const outputData = ffmpegInstance.FS("readFile", "output.mp4");
 
@@ -518,27 +506,6 @@ document.addEventListener("DOMContentLoaded", () => {
       resetToEmptyState();
     }
   });
-
-  const timelineTrack = document.getElementById("timelineTrack");
-  const rulerMid = document.getElementById("rulerMid");
-  const rulerEnd = document.getElementById("rulerEnd");
-  const cutsCountText = document.getElementById("cutsCountText");
-  const btnToggleDetails = document.getElementById("btnToggleDetails");
-  const toggleDetailsText = document.getElementById("toggleDetailsText");
-  const cutsList = document.getElementById("cutsList");
-
-  if (btnToggleDetails) {
-    btnToggleDetails.addEventListener("click", () => {
-      const isHidden = cutsList.classList.contains("hidden");
-      if (isHidden) {
-        cutsList.classList.remove("hidden");
-        toggleDetailsText.textContent = "Ocultar lista de cortes";
-      } else {
-        cutsList.classList.add("hidden");
-        toggleDetailsText.textContent = "Mostrar lista de cortes";
-      }
-    });
-  }
 
   // UI Helper Functions
   function updateProgressUI(percent, stepNumber, stepName, message) {
@@ -581,6 +548,27 @@ document.addEventListener("DOMContentLoaded", () => {
       btnDownload.download = res.filename;
     }
     renderTimeline(res.originalDuration, res.silences || [], res.speechSegments || []);
+  }
+
+  const timelineTrack = document.getElementById("timelineTrack");
+  const rulerMid = document.getElementById("rulerMid");
+  const rulerEnd = document.getElementById("rulerEnd");
+  const cutsCountText = document.getElementById("cutsCountText");
+  const btnToggleDetails = document.getElementById("btnToggleDetails");
+  const toggleDetailsText = document.getElementById("toggleDetailsText");
+  const cutsList = document.getElementById("cutsList");
+
+  if (btnToggleDetails) {
+    btnToggleDetails.addEventListener("click", () => {
+      const isHidden = cutsList.classList.contains("hidden");
+      if (isHidden) {
+        cutsList.classList.remove("hidden");
+        toggleDetailsText.textContent = "Ocultar lista de cortes";
+      } else {
+        cutsList.classList.add("hidden");
+        toggleDetailsText.textContent = "Mostrar lista de cortes";
+      }
+    });
   }
 
   function renderTimeline(totalDuration, silences, speechSegments) {
@@ -700,7 +688,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
           if (task.status === "completed") {
             clearInterval(progressInterval);
-            logToConsole("⚡ Processamento nativo concluído no servidor em SEGUNDOS!", "success");
+            logToConsole("⚡ Processamento concluído com sucesso no servidor Railway!", "success");
             setTimeout(() => {
               showResults({
                 originalDuration: task.result.original_duration,
@@ -715,13 +703,14 @@ document.addEventListener("DOMContentLoaded", () => {
             }, 500);
           } else if (task.status === "error") {
             clearInterval(progressInterval);
-            logToConsole(`✖ Erro no processamento nativo: ${task.message}`, "warning");
-            alert(`Erro no processamento nativo: ${task.message}`);
+            logToConsole(`✖ Erro no processamento do servidor: ${task.message}`, "warning");
+            alert(`Erro no processamento do servidor Railway: ${task.message}`);
             resetToEmptyState();
           }
         })
-        .catch(() => {
+        .catch((err) => {
           clearInterval(progressInterval);
+          console.error("Erro ao verificar progresso:", err);
         });
     }, 500);
   }
