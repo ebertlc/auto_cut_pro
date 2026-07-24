@@ -214,12 +214,10 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/>/g, "&gt;");
   }
 
-  // 5. FFmpeg.wasm Execution Workflow
+  // 5. Hybrid Auto-Switch Execution Workflow (Native Server vs Browser WASM)
   processForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (!selectedFile || !ffmpegInstance) return;
-
-    const { fetchFile } = FFmpeg;
+    if (!selectedFile) return;
 
     // Reset Console
     if (consoleBody) consoleBody.innerHTML = "";
@@ -233,7 +231,55 @@ document.addEventListener("DOMContentLoaded", () => {
 
     logToConsole(`Iniciando AutoCut Pro para '${selectedFile.name}' (${formatBytes(selectedFile.size)})...`, "info");
 
+    // 1. Verificação de Servidor Nativo Local (FastAPI python server.py)
+    let isNativeServerOnline = false;
     try {
+      const statusRes = await fetch("/api/status", { method: "GET", cache: "no-store" });
+      if (statusRes.ok) {
+        const statusData = await statusRes.json();
+        if (statusData.ffmpeg_installed) {
+          isNativeServerOnline = true;
+        }
+      }
+    } catch (err) {
+      isNativeServerOnline = false;
+    }
+
+    if (isNativeServerOnline) {
+      // MODO SERVIDOR NATIVO LOCAL: 30x mais rápido (aproveita todos os núcleos do CPU/GPU do sistema)
+      logToConsole("🚀 Servidor Nativo Local Detectado! Utilizando aceleração máxima de hardware (30x mais rápido)...", "success");
+      updateProgressUI(10, 1, "Enviando para Servidor Nativo", "Transmitindo arquivo para o engine nativo...");
+
+      const formData = new FormData();
+      formData.append("video", selectedFile);
+      formData.append("threshold_db", thresholdDb.value);
+      formData.append("padding", padding.value);
+      formData.append("min_silence_ms", minSilenceMs.value);
+
+      try {
+        const uploadRes = await fetch("/api/process", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!uploadRes.ok) throw new Error("Falha ao comunicar com o servidor nativo.");
+        const uploadData = await uploadRes.json();
+        
+        logToConsole(`✔ Upload concluído. ID da Tarefa: ${uploadData.task_id}. Processando no sistema nativo...`, "info");
+        startNativeProgressPolling(uploadData.task_id);
+        return;
+      } catch (err) {
+        logToConsole(`⚠ Falha no servidor nativo (${err.message}). Recorrendo ao modo WebAssembly do navegador...`, "warning");
+      }
+    } else {
+      logToConsole("ℹ Servidor local não detectado. Executando via WebAssembly (Client-Side no navegador)...", "info");
+      logToConsole("💡 Dica de velocidade: Execute 'python server.py' no terminal para cortar vídeos longos em 3 segundos!", "warning");
+    }
+
+    // 2. MODO BROWSER WEBASSEMBLY (Client-Side Fallback)
+    try {
+      const { fetchFile } = FFmpeg;
+
       // Step 1: Load FFmpeg into browser memory
       updateProgressUI(5, 1, "Carregando Engine FFmpeg", "Inicializando ambiente WebAssembly...");
       logToConsole("Carregando módulos do FFmpeg.wasm na memória RAM...", "info");
@@ -612,8 +658,10 @@ document.addEventListener("DOMContentLoaded", () => {
     outputVideoPlayer.src = res.videoUrl;
     outputVideoPlayer.load();
 
-    btnDownload.href = res.videoUrl;
-
+    btnDownload.href = res.downloadUrl || res.videoUrl;
+    if (res.filename) {
+      btnDownload.download = res.filename;
+    }
     renderTimeline(res.originalDuration, res.silences || [], res.speechSegments || []);
   }
 
@@ -699,6 +747,64 @@ document.addEventListener("DOMContentLoaded", () => {
     resultsContainer.classList.add("hidden");
     emptyState.classList.remove("hidden");
     btnSubmit.disabled = false;
+  }
+
+  let progressInterval = null;
+
+  function startNativeProgressPolling(taskId) {
+    if (progressInterval) clearInterval(progressInterval);
+
+    progressInterval = setInterval(() => {
+      fetch(`/api/progress/${taskId}`)
+        .then((res) => res.json())
+        .then((task) => {
+          updateProgressUI(
+            task.progress,
+            task.step,
+            task.step_name,
+            task.message
+          );
+
+          if (task.message && task.message !== lastLoggedMsg) {
+            lastLoggedMsg = task.message;
+            const logType = task.status === "completed" ? "success" : "info";
+            logToConsole(task.message, logType);
+          }
+
+          if (task.silences && task.speech_segments && liveStatsBar) {
+            liveStatsBar.classList.remove("hidden");
+            liveSilencesCount.textContent = task.silences.length;
+            liveSpeechCount.textContent = task.speech_segments.length;
+            const estDur = task.speech_segments.reduce((acc, [st, et]) => acc + (et - st), 0);
+            liveEstDuration.textContent = formatDuration(estDur);
+          }
+
+          if (task.status === "completed") {
+            clearInterval(progressInterval);
+            logToConsole("⚡ Processamento nativo concluído no servidor em SEGUNDOS!", "success");
+            setTimeout(() => {
+              showResults({
+                originalDuration: task.result.original_duration,
+                finalDuration: task.result.final_duration,
+                savedDuration: task.result.saved_duration,
+                silences: task.result.silences || [],
+                speechSegments: task.result.speech_segments || [],
+                videoUrl: task.result.stream_url,
+                downloadUrl: task.result.download_url,
+                filename: task.result.output_filename,
+              });
+            }, 500);
+          } else if (task.status === "error") {
+            clearInterval(progressInterval);
+            logToConsole(`✖ Erro no processamento nativo: ${task.message}`, "warning");
+            alert(`Erro no processamento nativo: ${task.message}`);
+            resetToEmptyState();
+          }
+        })
+        .catch(() => {
+          clearInterval(progressInterval);
+        });
+    }, 500);
   }
 
   function formatBytes(bytes) {
