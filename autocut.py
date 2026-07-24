@@ -219,12 +219,13 @@ def get_speech_segments(
 
     # Mesclar blocos de fala sobrepostos devido ao padding
     final_speech = []
+    min_gap = 0.35  # Pausas de silêncio menores que 0.35s após padding são unificadas para evitar centenas de micro-cortes
     for start, end in padded_speech:
         if not final_speech:
             final_speech.append((start, end))
         else:
             prev_start, prev_end = final_speech[-1]
-            if start <= prev_end:
+            if start - prev_end < min_gap:
                 final_speech[-1] = (prev_start, max(prev_end, end))
             else:
                 final_speech.append((start, end))

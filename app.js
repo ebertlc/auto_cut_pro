@@ -163,13 +163,15 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
+    // Merging speech blocks separated by gaps smaller than minGap (0.35s) to prevent hundreds of micro-cuts
+    const minGap = 0.35;
     const finalSpeech = [];
     for (const [s, e] of paddedSpeech) {
       if (finalSpeech.length === 0) {
         finalSpeech.push([s, e]);
       } else {
         const prev = finalSpeech[finalSpeech.length - 1];
-        if (s <= prev[1]) {
+        if (s - prev[1] < minGap) {
           prev[1] = Math.max(prev[1], e);
         } else {
           finalSpeech.push([s, e]);
@@ -299,6 +301,9 @@ document.addEventListener("DOMContentLoaded", () => {
           "-c", "copy",
           chunkName
         );
+
+        // Pausa para dar tempo ao evento do navegador e garbage collector
+        await new Promise((resolve) => setTimeout(resolve, 10));
 
         listTxt += `file '${chunkName}'\n`;
       }
