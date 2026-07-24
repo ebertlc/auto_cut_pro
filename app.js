@@ -185,6 +185,35 @@ document.addEventListener("DOMContentLoaded", () => {
     ]);
   }
 
+  const consoleBody = document.getElementById("consoleBody");
+  const liveStatsBar = document.getElementById("liveStatsBar");
+  const liveSilencesCount = document.getElementById("liveSilencesCount");
+  const liveSpeechCount = document.getElementById("liveSpeechCount");
+  const liveEstDuration = document.getElementById("liveEstDuration");
+
+  function logToConsole(message, type = "info") {
+    if (!consoleBody) return;
+    const now = new Date();
+    const timeStr = now.toTimeString().split(" ")[0];
+
+    const line = document.createElement("div");
+    line.className = "console-line";
+    line.innerHTML = `
+      <span class="console-time">[${timeStr}]</span>
+      <span class="console-msg ${type}">${escapeHtml(message)}</span>
+    `;
+
+    consoleBody.appendChild(line);
+    consoleBody.scrollTop = consoleBody.scrollHeight;
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
   // 5. FFmpeg.wasm Execution Workflow
   processForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -192,24 +221,36 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const { fetchFile } = FFmpeg;
 
+    // Reset Console
+    if (consoleBody) consoleBody.innerHTML = "";
+    if (liveStatsBar) liveStatsBar.classList.add("hidden");
+
     // UI Updates
     emptyState.classList.add("hidden");
     resultsContainer.classList.add("hidden");
     progressContainer.classList.remove("hidden");
     btnSubmit.disabled = true;
 
+    logToConsole(`Iniciando AutoCut Pro para '${selectedFile.name}' (${formatBytes(selectedFile.size)})...`, "info");
+
     try {
       // Step 1: Load FFmpeg into browser memory
       updateProgressUI(5, 1, "Carregando Engine FFmpeg", "Inicializando ambiente WebAssembly...");
+      logToConsole("Carregando módulos do FFmpeg.wasm na memória RAM...", "info");
+
       if (!ffmpegInstance.isLoaded()) {
         await ffmpegInstance.load();
+        logToConsole("✔ Engine FFmpeg.wasm pronta!", "success");
       }
 
       updateProgressUI(15, 1, "Lendo Vídeo", "Carregando arquivo na memória virtual do navegador...");
+      logToConsole(`Gravando '${selectedFile.name}' na memória virtual do navegador (MEMFS)...`, "info");
       ffmpegInstance.FS("writeFile", "input.mp4", await fetchFile(selectedFile));
+      logToConsole("✔ Arquivo montado com sucesso na memória virtual.", "success");
 
       // Step 2: Extrair Áudio
       updateProgressUI(30, 2, "Extraindo Áudio", "Convertendo faixa sonora para WAV 16kHz mono...");
+      logToConsole("Executando FFmpeg: extraindo faixa de áudio WAV (16000Hz mono PCM)...", "info");
       await ffmpegInstance.run(
         "-y",
         "-i", "input.mp4",
@@ -219,6 +260,7 @@ document.addEventListener("DOMContentLoaded", () => {
         "-c:a", "pcm_s16le",
         "temp_audio.wav"
       );
+      logToConsole("✔ Áudio extraído: temp_audio.wav criado.", "success");
 
       // Step 3: Detectar Silêncio
       updateProgressUI(45, 3, "Detectando Silêncio", "Analisando frequências sonoras...");
@@ -226,9 +268,61 @@ document.addEventListener("DOMContentLoaded", () => {
       const minMs = parseFloat(minSilenceMs.value);
       const minSec = minMs / 1000.0;
 
+      logToConsole(`Executando filtro silencedetect (noise=${dbVal}dB, min_dur=${minSec}s)...`, "info");
+
       let ffmpegLogs = [];
+      let currentTotalDuration = 0;
+
       ffmpegInstance.setLogger(({ message }) => {
-        if (message) ffmpegLogs.push(message);
+        if (!message) return;
+        ffmpegLogs.push(message);
+
+        // Capturar duração total quando informada pelo FFmpeg
+        const durMatch = message.match(/Duration:\s*(\d+):(\d+):([\d\.]+)/);
+        if (durMatch) {
+          const h = parseFloat(durMatch[1]);
+          const m = parseFloat(durMatch[2]);
+          const s = parseFloat(durMatch[3]);
+          currentTotalDuration = h * 3600 + m * 60 + s;
+        }
+
+        // Real-time FFmpeg rendering progress parser: frame= 450 fps=95 time=00:00:18.75 speed=3.9x
+        const timeMatch = message.match(/time=\s*(\d+):(\d+):([\d\.]+)/);
+        if (timeMatch) {
+          const h = parseFloat(timeMatch[1]);
+          const m = parseFloat(timeMatch[2]);
+          const s = parseFloat(timeMatch[3]);
+          const currentTimeSec = h * 3600 + m * 60 + s;
+
+          const speedMatch = message.match(/speed=\s*([\d\.]+)x/);
+          const fpsMatch = message.match(/fps=\s*([\d\.]+)/);
+          const frameMatch = message.match(/frame=\s*(\d+)/);
+
+          const speedStr = speedMatch ? `${speedMatch[1]}x` : "1.0x";
+          const frameStr = frameMatch ? `frame ${frameMatch[1]}` : "";
+          const timeStr = `${timeMatch[1]}:${timeMatch[2]}:${Math.floor(s).toString().padStart(2, "0")}`;
+
+          if (currentTotalDuration > 0) {
+            const renderPct = Math.min(96, Math.max(65, 65 + Math.floor((currentTimeSec / currentTotalDuration) * 31)));
+            updateProgressUI(
+              renderPct,
+              4,
+              "Renderizando Vídeo Final",
+              `Renderizando: ${renderPct}% | tempo=${timeStr} (velocidade: ${speedStr})`
+            );
+          } else {
+            updateProgressUI(
+              75,
+              4,
+              "Renderizando Vídeo Final",
+              `Renderizando: tempo=${timeStr} (${speedStr})`
+            );
+          }
+
+          logToConsole(`🎞 Renderizando ${frameStr}: tempo=${timeStr} [velocidade: ${speedStr}]`, "ffmpeg");
+        } else if (message.includes("silence_start") || message.includes("silence_end")) {
+          logToConsole(message, "ffmpeg");
+        }
       });
 
       await ffmpegInstance.run(
@@ -271,15 +365,29 @@ document.addEventListener("DOMContentLoaded", () => {
       const padSec = parseFloat(padding.value);
       const speechSegments = getSpeechSegments(silences, totalDuration, padSec);
 
+      const estDuration = speechSegments.reduce((acc, [st, et]) => acc + (et - st), 0);
+
+      logToConsole(`✔ Análise concluída: ${silences.length} silêncio(s) detectado(s).`, "success");
+      logToConsole(`✔ ${speechSegments.length} trecho(s) de fala a serem mantidos. Duração estimada: ${formatDuration(estDuration)}.`, "success");
+
+      // Atualizar Barra de Estatísticas em Tempo Real
+      if (liveStatsBar) {
+        liveStatsBar.classList.remove("hidden");
+        liveSilencesCount.textContent = silences.length;
+        liveSpeechCount.textContent = speechSegments.length;
+        liveEstDuration.textContent = formatDuration(estDuration);
+      }
+
       if (speechSegments.length === 0) {
+        logToConsole("⚠ Nenhum trecho de fala foi identificado com os parâmetros selecionados.", "warning");
         alert("Nenhum trecho de fala foi identificado com os parâmetros selecionados.");
         resetToEmptyState();
         return;
       }
 
       // Step 4: Cortar & Concatenar em Passagem Única (Single-Pass Filter Script)
-      // Executa o corte total em 1 único comando do FFmpeg, sem loops repetidos ou estouro de memória!
       updateProgressUI(65, 4, "Cortando & Mesclando Vídeo", `Processando ${speechSegments.length} trecho(s) de fala em passagem única...`);
+      logToConsole(`Gerando script de filtro com ${speechSegments.length} cortes e concatenação...`, "info");
 
       let filterScript = "";
       let concatInputs = "";
@@ -297,6 +405,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ffmpegInstance.FS("writeFile", "filter.txt", encoder.encode(filterScript));
 
       updateProgressUI(80, 4, "Renderizando Vídeo Final", "Processando edição em passagem única...");
+      logToConsole("Executando FFmpeg com -filter_complex_script (passagem única em C WebAssembly)...", "info");
 
       await ffmpegInstance.run(
         "-y",
@@ -306,6 +415,8 @@ document.addEventListener("DOMContentLoaded", () => {
         "-map", "[outa]",
         "output.mp4"
       );
+
+      logToConsole("✔ Vídeo final renderizado e montado em memória com sucesso!", "success");
 
       try {
         ffmpegInstance.FS("unlink", "filter.txt");

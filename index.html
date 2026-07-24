@@ -139,6 +139,35 @@
               <span>Cortando & Mesclando Vídeo Final</span>
             </li>
           </ul>
+
+          <!-- Live Analysis Summary Bar -->
+          <div class="live-stats-bar hidden" id="liveStatsBar">
+            <div class="live-stat-item">
+              <span class="live-stat-label">Silêncios Detectados</span>
+              <span class="live-stat-value" id="liveSilencesCount">0</span>
+            </div>
+            <div class="live-stat-item">
+              <span class="live-stat-label">Trechos de Fala</span>
+              <span class="live-stat-value highlight" id="liveSpeechCount">0</span>
+            </div>
+            <div class="live-stat-item">
+              <span class="live-stat-label">Duração Estimada</span>
+              <span class="live-stat-value badge-saved" id="liveEstDuration">00:00</span>
+            </div>
+          </div>
+
+          <!-- Live Activity Terminal Log Window -->
+          <div class="activity-console-card">
+            <div class="console-header">
+              <span class="console-dot red"></span>
+              <span class="console-dot yellow"></span>
+              <span class="console-dot green"></span>
+              <span class="console-title">Console de Atividades FFmpeg</span>
+            </div>
+            <div class="console-body" id="consoleBody">
+              <!-- Live log entries added dynamically -->
+            </div>
+          </div>
         </div>
 
         <!-- Results Card -->

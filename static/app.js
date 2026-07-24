@@ -153,6 +153,40 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   });
 
+  const consoleBody = document.getElementById("consoleBody");
+  const liveStatsBar = document.getElementById("liveStatsBar");
+  const liveSilencesCount = document.getElementById("liveSilencesCount");
+  const liveSpeechCount = document.getElementById("liveSpeechCount");
+  const liveEstDuration = document.getElementById("liveEstDuration");
+
+  let lastLoggedMsg = "";
+
+  function logToConsole(message, type = "info") {
+    if (!consoleBody || !message) return;
+    if (message === lastLoggedMsg) return;
+    lastLoggedMsg = message;
+
+    const now = new Date();
+    const timeStr = now.toTimeString().split(" ")[0];
+
+    const line = document.createElement("div");
+    line.className = "console-line";
+    line.innerHTML = `
+      <span class="console-time">[${timeStr}]</span>
+      <span class="console-msg ${type}">${escapeHtml(message)}</span>
+    `;
+
+    consoleBody.appendChild(line);
+    consoleBody.scrollTop = consoleBody.scrollHeight;
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
   const timelineTrack = document.getElementById("timelineTrack");
   const timelineRuler = document.getElementById("timelineRuler");
   const rulerMid = document.getElementById("rulerMid");
@@ -179,6 +213,10 @@ document.addEventListener("DOMContentLoaded", () => {
   // 5. Progress Polling
   function startProgressPolling(taskId) {
     if (progressInterval) clearInterval(progressInterval);
+    if (consoleBody) consoleBody.innerHTML = "";
+    if (liveStatsBar) liveStatsBar.classList.add("hidden");
+
+    logToConsole("Tarefa enviada ao servidor. Aguardando início do processamento...", "info");
 
     progressInterval = setInterval(() => {
       fetch(`/api/progress/${taskId}`)
@@ -191,11 +229,28 @@ document.addEventListener("DOMContentLoaded", () => {
             task.message
           );
 
+          if (task.message) {
+            const logType = task.status === "completed" ? "success" : "info";
+            logToConsole(task.message, logType);
+          }
+
+          // Atualizar barra de estatísticas assim que silêncios/segmentos estiverem prontos
+          if (task.silences && task.speech_segments && liveStatsBar) {
+            liveStatsBar.classList.remove("hidden");
+            liveSilencesCount.textContent = task.silences.length;
+            liveSpeechCount.textContent = task.speech_segments.length;
+
+            const estDur = task.speech_segments.reduce((acc, [st, et]) => acc + (et - st), 0);
+            liveEstDuration.textContent = formatDuration(estDur);
+          }
+
           if (task.status === "completed") {
             clearInterval(progressInterval);
+            logToConsole("✔ Processamento finalizado no servidor com sucesso!", "success");
             setTimeout(() => showResults(task.result), 600);
           } else if (task.status === "error") {
             clearInterval(progressInterval);
+            logToConsole(`✖ Erro no servidor: ${task.message}`, "warning");
             alert(`Erro no processamento: ${task.message}`);
             resetToEmptyState();
           }
