@@ -385,44 +385,140 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // Step 4: Cortar & Concatenar com Precisão de Frame (Single-Pass Filter Script)
-      // O uso de trim/atrim garante 100% de precisão milimétrica nos cortes, removendo os silêncios de verdade!
-      updateProgressUI(65, 4, "Cortando & Mesclando Vídeo", `Processando ${speechSegments.length} trecho(s) de fala com precisão milimétrica...`);
-      logToConsole(`✂ Modo de Corte Preciso Ativado: processando ${speechSegments.length} trechos de fala com alinhamento de frame...`, "info");
+      // Step 4: Cortar & Concatenar Inteligente (Smart Fast Cut com Correção de Timestamps)
+      // Utiliza busca rápida com correção de PTS/DTS (-avoid_negative_ts make_zero) para garantir corte real + velocidade máxima!
+      updateProgressUI(65, 4, "Cortando Vídeo (Modo Rápido & Preciso)", `Processando ${speechSegments.length} trecho(s) de fala com alinhamento de timestamps...`);
+      logToConsole(`⚡ Modo Rápido & Preciso Ativado: processando ${speechSegments.length} trechos com correção de PTS/DTS...`, "info");
 
-      let filterScript = "";
-      let concatInputs = "";
-
-      for (let k = 0; k < speechSegments.length; k++) {
-        const [st, et] = speechSegments[k];
-        filterScript += `[0:v]trim=start=${st.toFixed(3)}:end=${et.toFixed(3)},setpts=PTS-STARTPTS[v${k}];\n`;
-        filterScript += `[0:a]atrim=start=${st.toFixed(3)}:end=${et.toFixed(3)},asetpts=PTS-STARTPTS[a${k}];\n`;
-        concatInputs += `[v${k}][a${k}]`;
-      }
-
-      filterScript += `${concatInputs}concat=n=${speechSegments.length}:v=1:a=1[outv][outa]`;
-
+      const BATCH_SIZE = 20;
+      const batchFiles = [];
+      const totalSegments = speechSegments.length;
       const encoder = new TextEncoder();
-      ffmpegInstance.FS("writeFile", "filter.txt", encoder.encode(filterScript));
-
-      updateProgressUI(75, 4, "Renderizando Vídeo Cortado", "Processando edição com remoção real de silêncio...");
-      logToConsole("Executando FFmpeg com script de filtro (passagem única com trim de áudio e vídeo)...", "info");
-
-      await ffmpegInstance.run(
-        "-y",
-        "-i", "input.mp4",
-        "-filter_complex_script", "filter.txt",
-        "-map", "[outv]",
-        "-map", "[outa]",
-        "-preset", "ultrafast",
-        "output.mp4"
-      );
 
       try {
-        ffmpegInstance.FS("unlink", "filter.txt");
-      } catch (err) {}
+        for (let i = 0; i < totalSegments; i += BATCH_SIZE) {
+          const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
+          const currentBatchSegments = speechSegments.slice(i, i + BATCH_SIZE);
+          const currentChunks = [];
+          let batchListTxt = "";
 
-      logToConsole("✔ Vídeo editado gerado com 100% de precisão nos cortes!", "success");
+          for (let j = 0; j < currentBatchSegments.length; j++) {
+            const globalIdx = i + j;
+            const [st, et] = currentBatchSegments[j];
+            const dur = Math.max(0, et - st);
+            if (dur <= 0) continue;
+
+            const chunkName = `chunk_${globalIdx + 1}.mp4`;
+            currentChunks.push(chunkName);
+
+            const chunkProgress = 65 + Math.floor(((globalIdx + 1) / totalSegments) * 22);
+            updateProgressUI(
+              chunkProgress,
+              4,
+              "Cortando Vídeo (Modo Rápido & Preciso)",
+              `Corte ${globalIdx + 1} de ${totalSegments} (${st.toFixed(1)}s → ${et.toFixed(1)}s)...`
+            );
+
+            // FFmpeg Stream Copy com correção de timestamps para garantir que o vídeo venha cortado de verdade
+            await ffmpegInstance.run(
+              "-y",
+              "-fflags", "+genpts",
+              "-ss", st.toFixed(3),
+              "-i", "input.mp4",
+              "-t", dur.toFixed(3),
+              "-avoid_negative_ts", "make_zero",
+              "-c", "copy",
+              chunkName
+            );
+
+            await new Promise((resolve) => setTimeout(resolve, 8));
+            batchListTxt += `file '${chunkName}'\n`;
+          }
+
+          if (currentChunks.length > 0) {
+            const batchFileName = `batch_${batchIndex}.mp4`;
+            batchFiles.push(batchFileName);
+
+            const listFileName = `list_batch_${batchIndex}.txt`;
+            ffmpegInstance.FS("writeFile", listFileName, encoder.encode(batchListTxt));
+
+            await ffmpegInstance.run(
+              "-y",
+              "-f", "concat",
+              "-safe", "0",
+              "-i", listFileName,
+              "-c", "copy",
+              batchFileName
+            );
+
+            ffmpegInstance.FS("unlink", listFileName);
+            for (const chunk of currentChunks) {
+              try {
+                ffmpegInstance.FS("unlink", chunk);
+              } catch (err) {}
+            }
+          }
+        }
+
+        // Unir lotes finais via Concat Demuxer
+        updateProgressUI(90, 4, "Mesclando Vídeo Final", "Unindo lotes de trechos cortados...");
+        let finalBatchListTxt = "";
+        for (const bFile of batchFiles) {
+          finalBatchListTxt += `file '${bFile}'\n`;
+        }
+        ffmpegInstance.FS("writeFile", "list_final.txt", encoder.encode(finalBatchListTxt));
+
+        await ffmpegInstance.run(
+          "-y",
+          "-f", "concat",
+          "-safe", "0",
+          "-i", "list_final.txt",
+          "-c", "copy",
+          "output.mp4"
+        );
+
+        ffmpegInstance.FS("unlink", "list_final.txt");
+        for (const bFile of batchFiles) {
+          try {
+            ffmpegInstance.FS("unlink", bFile);
+          } catch (err) {}
+        }
+
+        logToConsole("⚡ Vídeo cortado com sucesso em modo rápido e preciso!", "success");
+
+      } catch (fastErr) {
+        logToConsole("⚠ Recorrendo ao renderizador ultrafast de passagem única...", "warning");
+
+        let filterScript = "";
+        let concatInputs = "";
+
+        for (let k = 0; k < speechSegments.length; k++) {
+          const [st, et] = speechSegments[k];
+          filterScript += `[0:v]trim=start=${st.toFixed(3)}:end=${et.toFixed(3)},setpts=PTS-STARTPTS[v${k}];\n`;
+          filterScript += `[0:a]atrim=start=${st.toFixed(3)}:end=${et.toFixed(3)},asetpts=PTS-STARTPTS[a${k}];\n`;
+          concatInputs += `[v${k}][a${k}]`;
+        }
+
+        filterScript += `${concatInputs}concat=n=${speechSegments.length}:v=1:a=1[outv][outa]`;
+        ffmpegInstance.FS("writeFile", "filter.txt", encoder.encode(filterScript));
+
+        await ffmpegInstance.run(
+          "-y",
+          "-i", "input.mp4",
+          "-filter_complex_script", "filter.txt",
+          "-map", "[outv]",
+          "-map", "[outa]",
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-tune", "zerolatency",
+          "-crf", "28",
+          "output.mp4"
+        );
+
+        try {
+          ffmpegInstance.FS("unlink", "filter.txt");
+        } catch (err) {}
+      }
 
       // Step 5: Obter Arquivo Final em Memória
       updateProgressUI(100, 4, "Finalizando", "Gerando arquivo para download...");
