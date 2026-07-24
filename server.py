@@ -64,6 +64,7 @@ def extract_audio(video_path: Path, output_audio_path: Path):
     command = [
         get_ffmpeg_exe(),
         "-y",
+        "-threads", "0",
         "-i", str(video_path),
         "-vn",
         "-ac", "1",
@@ -243,10 +244,13 @@ def process_video_task(
         tasks_db[task_id]["message"] = "Renderizando vídeo final com remoção real de silêncio..."
 
         render_cmd = [
-            get_ffmpeg_exe(), "-y", "-i", str(input_file_path),
+            get_ffmpeg_exe(), "-y",
+            "-threads", "0",
+            "-i", str(input_file_path),
             "-filter_complex_script", str(filter_script_file),
             "-map", "[outv]", "-map", "[outa]",
-            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-c:a", "aac", "-b:a", "128k",
             str(output_file_path)
         ]
         subprocess.run(render_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=True)
